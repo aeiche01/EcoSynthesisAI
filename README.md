@@ -20,7 +20,7 @@ By organizing literature into distinct conceptual buckets, research teams can ea
 Instead of researchers manually cross-referencing hundreds of PDFs to find disagreements in the literature, the tool's Synthesis Engine instantly flags papers that provide conflicting evidence on a topic while also summarizing the overall evidence present in each theme. This allows researchers to immediately pinpoint the most contentious or complex areas of their field and focus their intellectual energy where it matters most.
 
 4. **Private & Client-Side**
-Because the tool runs entirely in your browser (client-side), your ideas, research data, and your personal API keys are only communicated directly with Google's AI models.
+Because the tool runs entirely in your browser (client-side), your ideas and research data are only communicated with Google's AI models and never sent elsewhere. Your API key is only used to access Google servers and otherwise never leaves your browser.
 ---
 
 ## 🚀 Quick Start Guide
