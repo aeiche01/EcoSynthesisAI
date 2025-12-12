@@ -68,7 +68,6 @@ As of December 2025, the free tier works well with the Gemma model while Gemini 
   - Should include Title, Abstract, Authors, Journal, and Year. Generally organized like so:
   
     > *Authors (Year). Title. Journal*
-    
     > *Abstract (on new line)*
     
   - Variations on citation format *should* be okay, but the tool was only tested on this format. 
