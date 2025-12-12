@@ -4,7 +4,7 @@ EcoSynthesisAI is a browser-based tool designed to automate one of the most tedi
 
 > **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers (e.g., from Web of Science) and needs help organizing and understanding them.
 
-Because the tool runs entirely in your browser (client-side), your data and API keys remain private and never leave your computer.
+Although it was originally designed to assist with Ecology reviews, the tool is based entirely on Google's AI models and therefore should be applicable to any field of science.
 
 ## Why use EcoSynthesisAI?
 
