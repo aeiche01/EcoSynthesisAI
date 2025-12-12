@@ -1,6 +1,6 @@
 # EcoSynthesisAI: The Systematic Review Assistant
 
-EcoSynthesisAI is a browser-based tool designed to automate one of the most tedious parts of systematic reviews. It uses advanced Artificial Intelligence (Google's Gemini and Gemma models) to read thousands of research abstracts, extract structured data (Drivers, Responses, Locations, Species), and organize them into a coherent taxonomy.
+EcoSynthesisAI transforms the overwhelming chaos of a large-scale systematic review into a clear, structured manuscript outline. Designed to break the "cognitive bottleneck" of synthesizing thousands of papers, this browser-based tool uses advanced AI (Google's Gemini and Gemma) to read your abstracts, extract critical data (Drivers, Responses, Species), and intelligently organize them into a coherent thematic taxonomy and note papers with conflicting conclusions before you even write a single sentence.
 
 > **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers (e.g., from Web of Science) and needs help organizing and understanding them.
 
