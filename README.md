@@ -1,11 +1,26 @@
 # EcoSynthesisAI: The Systematic Review Assistant
 
-EcoSynthesisAI is a browser-based tool designed to automate the most tedious parts of systematic reviews. It uses advanced Artificial Intelligence (Google's Gemini and Gemma models) to read thousands of research abstracts, extract structured data (Drivers, Responses, Locations, Species), and organize them into a coherent taxonomy.
+EcoSynthesisAI is a browser-based tool designed to automate one of the most tedious parts of systematic reviews. It uses advanced Artificial Intelligence (Google's Gemini and Gemma models) to read thousands of research abstracts, extract structured data (Drivers, Responses, Locations, Species), and organize them into a coherent taxonomy.
 
-> **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers and needs help organizing and understanding them.
+> **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers (e.g., from Web of Science) and needs help organizing and understanding them.
 
 Because the tool runs entirely in your browser (client-side), your data and API keys remain private and never leave your computer.
 
+## Why use EcoSynthesisAI?
+
+Conducting a large-scale systematic review often requires a team to hold thousands of disparate findings in their heads simultaneously to find patterns. EcoSynthesisAI solves this "cognitive bottleneck" by turning a flat list of papers into a structured workspace.
+
+1. **From Abstract to Outline**
+The tool automatically sorts papers into connected Themes (Main Sections) and Sub-Themes (Sub-Sections) that mirror the structure of a final review paper. This transforms a chaotic spreadsheet into a logical Table of Contents before you even start writing.
+
+2. **Streamlined Collaboration**
+By organizing literature into distinct conceptual buckets, research teams can easily split the writing workload. A researcher assigned to the "Physiological Responses" section only needs to review the papers specifically sorted into that theme, rather than wading through the entire library.
+
+3. **Accelerated Insight**
+Instead of manually cross-referencing hundreds of PDFs to find disagreements, the tool's Synthesis Engine instantly flags papers that provide contradictory evidence while also summarizing the overall evidence present in each theme. This allows researchers to immediately pinpoint the most contentious or complex areas of their field and focus their intellectual energy where it matters most.
+
+4. **Private & Client-Side**
+Because the tool runs entirely in your browser (client-side), your ideas, research data, and your personal API keys are only communicated directly with Google's AI models.
 ---
 
 ## 🚀 Quick Start Guide
