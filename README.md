@@ -17,7 +17,7 @@ The tool automatically sorts papers into connected Themes (Main Sections) and Su
 By organizing literature into distinct conceptual buckets, research teams can easily split the writing workload. A researcher assigned to the "Physiological Responses" section only needs to review the papers specifically sorted into that theme, rather than wading through the entire library.
 
 3. **Accelerated Insight**
-Instead of manually cross-referencing hundreds of PDFs to find disagreements in the literature, the tool's Synthesis Engine instantly flags papers that provide conflicting evidence on a topic while also summarizing the overall evidence present in each theme. This allows researchers to immediately pinpoint the most contentious or complex areas of their field and focus their intellectual energy where it matters most.
+Instead of researchers manually cross-referencing hundreds of PDFs to find disagreements in the literature, the tool's Synthesis Engine instantly flags papers that provide conflicting evidence on a topic while also summarizing the overall evidence present in each theme. This allows researchers to immediately pinpoint the most contentious or complex areas of their field and focus their intellectual energy where it matters most.
 
 4. **Private & Client-Side**
 Because the tool runs entirely in your browser (client-side), your ideas, research data, and your personal API keys are only communicated directly with Google's AI models.
