@@ -34,13 +34,10 @@ To use EcoSynthesisAI, you need a **Google AI Studio API Key** (free with a Goog
 - Click **"Get API Key"** in the top left
 
 **Note:**  
-The free tier works well for small–medium reviews. Large workloads (thousands of papers per day) may require a paid tier to increase rate limits.
-
-### 2. Launching the Tool
-
-*(Provide link or instructions here if needed.)*
+As of December 2025, the free tier works well with the Gemma model while Gemini 2.5 has strict limits per day. Large workloads that require Gemini's more advanced model may require a paid tier to increase rate limits.
 
 ---
+### 2. Launching the Tool
 
 ## 📖 Step-by-Step Instructions
 
