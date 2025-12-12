@@ -1,128 +1,202 @@
 # EcoSynthesisAI: The Systematic Review Assistant
 
-EcoSynthesisAI is a browser-based tool designed to automate the most tedious parts of systematic reviews. It uses advanced Artificial Intelligence (Google's Gemini and Gemma models) to read thousands of research abstracts, extract structured data (Drivers, Responses, Locations, Species), and organize them into a coherent taxonomy. Note that this tool does not find papers based on topics or criteria by searching the web. Instead, it assumes that the user has already curated a full list of papers relevant to their topic of interest that they plan to include in their review, and that the user now needs to better organize and understand this list.
+EcoSynthesisAI is a browser-based tool designed to automate the most tedious parts of systematic reviews. It uses advanced Artificial Intelligence (Google's Gemini and Gemma models) to read thousands of research abstracts, extract structured data (Drivers, Responses, Locations, Species), and organize them into a coherent taxonomy.
 
-Because this tool runs entirely in your browser (Client-Side), your data and API keys remain private and are never sent to a third-party backend server.
+> **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers and needs help organizing and understanding them.
 
-### 🚀 Quick Start Guide
+Because the tool runs entirely in your browser (client-side), your data and API keys remain private and never leave your computer.
 
-1. Prerequisites
+---
 
-To use this tool, you need a Google AI Studio API Key. This is free, you should just need a Google account (e.g., Gmail).
+## 🚀 Quick Start Guide
 
-  - Go to [Google AI Studio](aistudio.google.com).
+### 1. Prerequisites
 
-  - Create a new project (basically just a place to house your API key).
+To use EcoSynthesisAI, you need a **Google AI Studio API Key** (free with a Google account).
 
-  - Click "Get API Key" in the top left.
+- Go to [Google AI Studio](https://aistudio.google.com)
+- Create a new project
+- Click **"Get API Key"** in the top left
 
-Note: The Free Tier is sufficient for small-to-medium reviews. For heavy usage (thousands of papers per day), you may need a paid tier to increase rate limits.
+**Note:**  
+The free tier works well for small–medium reviews. Large workloads (thousands of papers per day) may require a paid tier to increase rate limits.
 
-2. Launching the Tool
+### 2. Launching the Tool
 
+*(Provide link or instructions here if needed.)*
 
-### 📖 Step-by-Step Instructions
+---
 
-  #### Phase 1: Input & Configuration
+## 📖 Step-by-Step Instructions
 
-  - Enter API Key: Paste your Google AI Studio key into the password field.
+### Phase 1: Input & Configuration
 
-  - Define Topic: (Optional but recommended) Enter a short sentence describing your review topic or its title (e.g., "Impact of urbanization on bird song"). This helps the AI understand context.
+- **Enter API Key:**  
+  Paste your Google AI Studio key into the password field.
 
-  - Select AI Model:
+- **Define Topic (optional):**  
+  Enter a short description of your review topic (e.g., *"Impact of urbanization on bird song"*).  
+  This provides context for the AI.
 
-      - Gemini 2.5 Flash: Best for quality and complex reasoning. Use this if accuracy is your priority. May have pretty severe limits (e.g., as of December 2025, the free tier for Gemini 2.5 only has 20 requests allowed per day).
-
-      - Gemma 3 27b: Higher rate limits (quota). Use this if you are hitting limits with Gemini.
-
-  - Input Data: Paste your raw list of papers into the large text area on the left.
-
-      - Format: You can paste directly from Excel, CSV, or a text file. The tool expects standard bibliographic formats (Title, Abstract, Authors, Year). Ensure there is at least one blank line between different papers to help the tool separate them.
-
-  #### Phase 2: Extraction & Sorting
-
-  - Click the green "Start Extraction" button.
-
-  - __Wait__: The tool processes papers in batches. You will see a progress indicator (e.g., "Batch 1/5"). Note: Do not close the tab while processing.
+- **Select AI Model:**
   
-  - Preliminary Categories: As batches finish, folders will appear on the right. These are marked (Preliminary). This means the AI is still building its understanding of your specific field based on the provided papers.
-
-  ### Phase 3: The "Final Optimization"
-
-  Once all batches are read, the tool automatically runs a "Post-Hoc Optimization".
-
-  - **What is it**? The AI looks at the entire dataset at once to find patterns. It merges synonyms (e.g., changing "Rainfall" and "Precipitation" to the same "Precipitation" category), attempts to fix repeating subdivisions (e.g."Phenological Mismatch" appears in two different categories) and reorganizes folders into a clean manuscript structure.
+  - **Gemini 2.5 Flash**  
+    Best quality and reasoning. Recommended when accuracy is the priority.  
+    *Free tier limits are low (≈20 requests/day as of Dec 2025).*
   
-  - Completion: When the "(Preliminary)" tags disappear, your data are categorized. The intent is that the categories are what the sections/subsections of your review may look like.
+  - **Gemma 3 27B**  
+    Higher rate limits. Use this if you hit Gemini’s quota.
 
-  ### Phase 4: Handling Errors (The "Manual Fix" Window)
+- **Input Data:**  
+  Paste your raw list of papers into the large text box.
 
-  Sometimes, raw text contains "Mojibake" (garbled characters like Ã© instead of é) or weird formatting that confuses the AI.
+  **Format Requirements:**
+  - Accepts text copied from Excel, CSV, or plain text
+  - Should include Title, Abstract, Authors, and Year
+  - Ensure **one blank line** between papers for proper separation
 
-  - If a batch fails, extraction will pause, and a "Data Repair Required" window will pop up.
-  
-  - __Action__: Look at the text in the box. Fix any obvious errors (like deleting a massive block of gibberish text or fixing a broken title).
-  
-  - Click "Retry Batch". The tool will resume exactly where it left off.
+---
 
-### 📊 Visualizations & Analysis
+### Phase 2: Extraction & Sorting
 
-Use the tabs at the top of the main view to switch between different analytical tools:
+- Click **Start Extraction** (green button)
+- **Wait** while papers are processed in batches  
+  (e.g., *"Batch 1/5"*)
 
-  - 📁 List View: The standard folder structure.
-      - Feature: Click the ⚡ Sparkle Icon next to any sub-theme to generate a written synthesis and contradiction analysis for that specific topic. **Contradiction analysis** means that the AI will point out any papers that have conflicting results on the same topic (e.g., John Doe et al. 2020 found that deer expand their ranges due to climate change, while Jane Doe et al. 2024 found that deer have contracted their ranges in increasing temperatures).
+> **Do not close the tab during processing.**
 
-  - 🔀 Flow Diagram: A Sankey diagram showing connections between Drivers (Causes) and Responses (Effects).
-    - Hover: Hover over any bar to highlight connected papers.
+- **Preliminary Categories:**  
+  As batches finish, folders appear on the right and are labeled **(Preliminary)**.  
+  These reflect early structure while the AI learns field-specific patterns.
 
-  - 📈 Trends: A line chart showing research interest over time.
-    - Filters: Toggle between tracking "Drivers" or "Responses".
+---
 
-  - ▦ Gaps: A heatmap showing the "Research Vacuum."
-    - **Reading it**: Dark green squares = lots of papers. White squares = no papers (a potential research gap).
+### Phase 3: Final Optimization
 
-  - 🌎 Demographics: Geographic distribution and taxonomic spread (Species/Groups).
+After all batches are processed, the tool performs a **Post-Hoc Optimization**.
 
-  - 💬 Chat: A "Chat with your Data" feature. Ask questions like "Which papers found negative effects of fire in Canada?". Essentially allows for user-generated prompts to be sent to the AI, and the AI will constrain its answers to only the data that has been sorted/categorized. **Please be careful with this feature**. Verify everything.
+**What it does:**
 
-- 💾 Saving & Exporting
+- Merges synonyms  
+  (e.g., *Rainfall* → *Precipitation*)
+- Fixes repeated subcategories  
+- Reorganizes folders into a clean manuscript-like taxonomy
 
-You never want to lose your work!
+**Completion:**  
+When all **(Preliminary)** tags disappear, the final categorization is complete.
 
-  - Save Progress: Click "Export" in the settings panel to download a .json file containing all your extracted papers and categories.
+---
 
-  - Resume Later: Refresh the page and click the "Import" button, navigate to your saved .json, and import it to pick up exactly where you left off.
+### Phase 4: Handling Errors (Manual Fix Window)
 
-  - Export Data: Click the Download CSV button in the header to get a spreadsheet for Excel/R. There should also be a download data button available for every figure as well.
+Some input text may contain encoding errors (“Mojibake”: *Ã©* instead of *é*) or malformed content.
 
-  - Export Images: Every chart has an Image or Save Image button to download a high-res PNG for your manuscript.
+- If a batch fails, a **Data Repair Required** window appears.
+- **Your task:**  
+  Inspect the displayed text and correct any obvious issues  
+  (gibberish blocks, broken titles, etc.)
+- Click **Retry Batch** to continue processing.
 
-- ⚠️ Troubleshooting
+---
 
-"Google's API has blocked further requests..."
+## 📊 Visualizations & Analysis
 
-  - Cause: You hit the Free Tier rate limit.
+Switch between analysis modes using the tabs at the top of the interface.
 
-  - Fix: Wait 60 seconds and try again, if this is a requests per minute problem. It is also likely you hit your maximim requests per day. In that case, switch the model to Gemma 3 (which has higher limits).
+### 📁 List View
+Standard folder view.
 
-"AI returned malformed data..."
+**Features:**
+- Click the **⚡ Sparkle Icon** next to a sub-theme to generate:  
+  - A written synthesis  
+  - A contradiction analysis  
+    - e.g., highlighting conflicting findings across papers
 
-  - Cause: A specific paper title or abstract was too long or contained broken text, cutting off the AI's response.
+### 🔀 Flow Diagram
+A Sankey diagram linking **Drivers (Causes)** to **Responses (Effects)**.
 
-  - Fix: The tool usually catches this and opens the "Manual Fix" window. If it persists, try manually shortening the abstract in your source text before pasting.
+- Hover to highlight connected papers
 
-"The tool seems stuck on 'Finalizing'..."
+### 📈 Trends
+A time-series showing **research interest over time**.
 
-  - Cause: Determining the final taxonomy for hundreds of papers takes time.
+- Filters available for Drivers or Responses
 
-  - Fix: Please be patient. If it takes longer than 30 minutes, check your browser console (F12) for errors. You can safe-refresh and load your last exported JSON to try again.
+### ▦ Gaps
+A heatmap showing the **Research Vacuum**.
 
-🔒 Privacy & Security
+- Dark green = many papers  
+- White = research gap
 
-  - Client-Side Execution: All processing happens in your web browser.
+### 🌎 Demographics
+Geographic and taxonomic (species/group) distributions.
 
-  - Direct Connection: Your API key is sent directly from your computer to Google's servers. It is never sent to us or stored in any database we control.
-    
-    - We note that there is a tag placed in the webpage that only allows Google Analytics to know whether the tool is used, just to keep us in the loop on the tool's popularity.
+### 💬 Chat
+Ask natural-language questions about your dataset.  
+Example: *"Which papers found negative effects of fire in Canada?"*
 
-  - Data Persistence: Data is stored in your browser's memory. If you close the tab without exporting, data is lost. Save often!
+> **Warning:** Always verify results generated through Chat.
+
+---
+
+## 💾 Saving & Exporting
+
+Avoid losing progress!
+
+- **Export Progress:**  
+  Click **Export** to download a `.json` file of all extracted data and categories.
+
+- **Resume Later:**  
+  After refreshing the page, click **Import** and load your saved JSON.
+
+- **Export Data:**  
+  Use **Download CSV** to export tables for Excel/R.  
+  Figures also provide downloadable data tables.
+
+- **Export Images:**  
+  All charts include a **Save Image** button for high-resolution PNGs.
+
+---
+
+## ⚠️ Troubleshooting
+
+### "Google's API has blocked further requests..."
+- **Cause:** Rate limit reached  
+- **Fix:**  
+  - Wait 60 seconds (if per-minute limit)  
+  - Switch to **Gemma 3** (higher daily quota)
+
+### "AI returned malformed data..."
+- **Cause:** Very long or corrupted abstract  
+- **Fix:**  
+  - Use the **Manual Fix** window  
+  - Or shorten the abstract before re-pasting
+
+### "The tool seems stuck on 'Finalizing'..."
+- **Cause:** Large-dataset taxonomy resolution  
+- **Fix:**  
+  - Wait (can take several minutes)  
+  - If >30 minutes, check browser console (F12)  
+  - Safe-refresh and reload your exported JSON
+
+---
+
+## 🔒 Privacy & Security
+
+- **Client-Side Execution:**  
+  All processing occurs in your browser.
+
+- **Direct Connection:**  
+  Your API key is sent only from your device to Google’s servers.  
+  It is **never** sent to us or stored by us.
+
+- **Minimal Analytics:**  
+  A tag allows Google Analytics to record that the tool was opened—no data content is tracked.
+
+- **Data Persistence:**  
+  Data lives in browser memory only.  
+  **Closing the tab without exporting will erase your progress.**
+
+**Save often!**
+
+---
