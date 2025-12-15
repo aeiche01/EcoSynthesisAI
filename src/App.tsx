@@ -1037,7 +1037,7 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
   return (
     <div className="flex flex-col h-full bg-slate-50 rounded-lg border border-slate-200">
       <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-white rounded-t-lg flex-wrap gap-2">
-        <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
+        <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><ZoomIn className="h-4 w-4 text-slate-600"/></button><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
         <div className="flex items-center gap-2">
            {/* GROUP TERMS BUTTON (LOCAL) */}
             <button 
@@ -1976,7 +1976,7 @@ const App = () => {
           if (suggestion.suggested_category_merge) {
               // CASE 1: Category Merge Reverse
               const { source_category, target_category } = suggestion.suggested_category_merge;
-              const result = await reverseSuggestionWithGemini(source_category, target_category, apiKey, activeModelId, (msg) => {});
+              const result = await reverseSuggestionWithGemini(source_category, target_category, apiKey, activeModelId, () => {});
               
               if (result && result.reason) {
                   // Flip the suggestion in place
@@ -2000,7 +2000,7 @@ const App = () => {
               const { current_category, target_category } = suggestion.suggested_move;
               
               // We ask the AI to justify merging the Target into the Current (the reverse of moving the sub-theme out)
-              const result = await reverseSuggestionWithGemini(target_category, current_category, apiKey, activeModelId, (msg) => {});
+              const result = await reverseSuggestionWithGemini(target_category, current_category, apiKey, activeModelId, () => {});
 
               if (result && result.reason) {
                    setConsolidationSuggestions(prev => prev?.map(s => {
@@ -2046,7 +2046,7 @@ const App = () => {
 
           if (themePapers.length === 0) return;
 
-          const verification = await verifyMoveWithGemini(theme, current_category, target_category, themePapers, apiKey, activeModelId, (msg) => {});
+          const verification = await verifyMoveWithGemini(theme, current_category, target_category, themePapers, apiKey, activeModelId, () => {});
           
           if (verification.isValid) {
                // Mark as verified
