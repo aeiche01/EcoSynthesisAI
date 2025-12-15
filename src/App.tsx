@@ -734,17 +734,31 @@ async function optimizeStructureWithGemini(
     1. **Manuscript Structure:** Organize 'Main Categories' as Major Sections, 'Sub-Themes' as Subsections. Prioritize OUTCOME domains.
     2. **Generalize Sub-Themes:** Merge sub-themes describing the same outcome but different drivers (e.g. "Fire-driven Predation" -> "Predation Rates").
     3. **NORMALIZE METADATA (Apply Universally):**
-       - **Drivers:** Scan for ANY synonyms and standardize them. (e.g., "Rainfall"/"Precipitation" -> "Precipitation"; "Temp"/"Temperature" -> "Temperature").
-       - **Locations:** Consolidate synonyms (e.g. "USA"/"United States" -> "United States"), but preserve specific regions if distinctive.
-       - **Species:** Standardize names (e.g. "5 ducks" -> "Anatidae (Ducks)").
-       - **Titles:** If any title contains a bracketed translation [like this], remove the bracketed part and keep the English.
+       - **Drivers:** Scan for ALL synonyms and standardize them to a single term. (e.g., "Rainfall"/"Precipitation" -> "Precipitation"; "Temp"/"Temperature" -> "Temperature"). Use this standardized term for 'new_driver'.
+       - **Responses:** Scan for ALL synonyms and standardize them to a single term. Use this standardized term for 'new_response'.
+       - **Locations:** Consolidate synonyms (e.g. "USA"/"United States" -> "United States"). Use this for 'new_location'.
+       - **Species:** Standardize names (e.g. "5 ducks" -> "Anatidae (Ducks)"). Use this for 'new_species'.
     4. **GROUP METADATA (Hierarchical):**
-       - Assign 'new_driver_group' (e.g. "Precipitation" -> "Climate").
-       - Assign 'new_response_group' (e.g. "Hatching Success" -> "Demography").
-    5. **No Redundancy:** Don't use the review topic itself as a category.
+       - Assign 'new_driver_group' (e.g. "Precipitation" -> "Climate", "Predation" -> "Biotic").
+       - Assign 'new_response_group' (e.g. "Hatching Success" -> "Demography", "Water Use Efficiency" -> "Physiology").
+    5. **Titles:** If any title contains a bracketed translation [like this], remove the bracketed part and keep the English.
     
     OUTPUT SCHEMA (Strict JSON):
-    { "moves": [ { "paper_id": "...", "new_category": "...", "new_theme": "...", "new_driver": "...", "new_driver_group": "...", "new_response": "...", "new_response_group": "...", "new_location": "...", "new_species": "..." } ] }
+    { 
+      "moves": [ 
+        { 
+          "paper_id": "...", 
+          "new_category": "...", 
+          "new_theme": "...", 
+          "new_driver": "...", 
+          "new_driver_group": "...", 
+          "new_response": "...", 
+          "new_response_group": "...", 
+          "new_location": "...", 
+          "new_species": "..." 
+        } 
+      ] 
+    }
   `;
 
   const userPrompt = `PAPER LIST:\n${JSON.stringify(paperSummaries)}`;
@@ -957,11 +971,24 @@ const QuotaModal = ({ isOpen, onClose, exportFn }: { isOpen: boolean, onClose: (
   );
 };
 
-const FlowDiagram = ({ papers, onFilter }: { papers: Paper[], onFilter: (papers: Paper[]) => void }) => {
+interface FlowDiagramProps {
+  papers: Paper[];
+  onFilter: (papers: Paper[]) => void;
+  isDriverGrouped: boolean;
+  isResponseGrouped: boolean;
+  setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
+  setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
+  isTermsNormalized: boolean;
+  // New props for the button:
+  handleOptimizeTerms: () => Promise<void>;
+  isConsolidating: boolean;
+  apiKey: string;
+}
+
+const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const [zoom, setZoom] = useState(1);
   const [driverFilter, setDriverFilter] = useState('');
   const [responseFilter, setResponseFilter] = useState('');
-  // removed isGrouped state
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<{ type: 'driver'|'response', name: string, startY: number } | null>(null);
   const [customOrder, setCustomOrder] = useState<{ drivers: string[], responses: string[] }>({ drivers: [], responses: [] });
@@ -969,9 +996,9 @@ const FlowDiagram = ({ papers, onFilter }: { papers: Paper[], onFilter: (papers:
   const data = useMemo(() => {
     const drivers: Record<string, number> = {}; const responses: Record<string, number> = {}; const links: Record<string, { count: number, papers: Paper[], effectCounts: Record<string, number> }> = {};
     papers.forEach(p => {
-      // Logic simplified to always use raw driver/response since grouping button is removed
-      const d = p.driver || "Unknown";
-      const r = p.response || "Unknown";
+      // Use Group fields if the toggle is active, otherwise use raw fields.
+      const d = isDriverGrouped ? (p.driverGroup || p.driver || "Unknown") : (p.driver || "Unknown");
+      const r = isResponseGrouped ? (p.responseGroup || p.response || "Unknown") : (p.response || "Unknown");
       if (driverFilter && !d.toLowerCase().includes(driverFilter.toLowerCase())) return;
       if (responseFilter && !r.toLowerCase().includes(responseFilter.toLowerCase())) return;
       const linkKey = `${d}|||${r}`;
@@ -985,7 +1012,7 @@ const FlowDiagram = ({ papers, onFilter }: { papers: Paper[], onFilter: (papers:
     if (customOrder.drivers.length > 0) { sortedDrivers = [...sortedDrivers].sort((a, b) => { const idxA = customOrder.drivers.indexOf(a); const idxB = customOrder.drivers.indexOf(b); if (idxA === -1 && idxB === -1) return 0; if (idxA === -1) return 1; if (idxB === -1) return -1; return idxA - idxB; }); }
     if (customOrder.responses.length > 0) { sortedResponses = [...sortedResponses].sort((a, b) => { const idxA = customOrder.responses.indexOf(a); const idxB = customOrder.responses.indexOf(b); if (idxA === -1 && idxB === -1) return 0; if (idxA === -1) return 1; if (idxB === -1) return -1; return idxA - idxB; }); }
     return { driverList: sortedDrivers.map(d => ({ name: d, count: drivers[d] })), responseList: sortedResponses.map(r => ({ name: r, count: responses[r] })), links };
-  }, [papers, driverFilter, responseFilter, customOrder]);
+  }, [papers, driverFilter, responseFilter, customOrder, isDriverGrouped, isResponseGrouped]);
 
   const width = 1000; const colWidth = 220; const nodeHeight = 35; const gap = 20; const contentHeight = Math.max(data.driverList.length, data.responseList.length) * (nodeHeight + gap) + 100; const height = Math.max(600, contentHeight);
   const getPositions = (items: { name: string, count: number }[], x: number) => { let currentY = 50; return items.map((item) => { const pos = { name: item.name, count: item.count, x, y: currentY, h: nodeHeight }; currentY += nodeHeight + gap; return pos; }); };
@@ -1010,9 +1037,39 @@ const FlowDiagram = ({ papers, onFilter }: { papers: Paper[], onFilter: (papers:
   return (
     <div className="flex flex-col h-full bg-slate-50 rounded-lg border border-slate-200">
       <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-white rounded-t-lg flex-wrap gap-2">
-        <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomIn className="h-4 w-4 text-slate-600"/></button><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
+        <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
         <div className="flex items-center gap-2">
-          
+           {/* GROUP TERMS BUTTON (LOCAL) */}
+            <button 
+              onClick={handleOptimizeTerms}
+              disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
+              title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                ${papers.length === 0 || isConsolidating || !apiKey
+                  ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                  : isTermsNormalized 
+                    ? 'text-green-700 border-green-200 bg-green-50'
+                    : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                  }`}
+            >
+              {isConsolidating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : isTermsNormalized ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Wrench className="h-3 w-3" />
+              )}
+              {isConsolidating 
+                ? 'Normalizing...' 
+                : isTermsNormalized
+                  ? 'Terms Grouped'
+                  : 'Group Terms'}
+            </button>
+            {/* DRIVER GROUP TOGGLE (New) */}
+           <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+           {/* RESPONSE GROUP TOGGLE (New) */}
+           <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
+
           <div className="flex items-center bg-white border border-slate-300 rounded px-2 py-1 gap-2"><Search className="h-3 w-3 text-slate-400" /><input type="text" placeholder="Filter Drivers..." className="text-xs outline-none w-24" value={driverFilter} onChange={e => setDriverFilter(e.target.value)} /><div className="w-px h-3 bg-slate-300"></div><input type="text" placeholder="Filter Outcomes..." className="text-xs outline-none w-24" value={responseFilter} onChange={e => setResponseFilter(e.target.value)} /></div>
           <button onClick={handleExportDataCSV} className="text-xs flex items-center gap-1 text-slate-600 hover:text-emerald-600 font-medium cursor-pointer"><Download className="h-3 w-3"/> Data</button>
           <button onClick={handleExportPNG} className="text-xs flex items-center gap-1 text-slate-600 hover:text-blue-600 font-medium cursor-pointer"><ImageIcon className="h-3 w-3"/> Image</button>
@@ -1033,11 +1090,23 @@ const FlowDiagram = ({ papers, onFilter }: { papers: Paper[], onFilter: (papers:
   );
 };
 
+interface TemporalChartProps {
+  papers: Paper[];
+  isDriverGrouped: boolean;
+  isResponseGrouped: boolean;
+  setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
+  setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
+  isTermsNormalized: boolean;
+  // New props for the button:
+  handleOptimizeTerms: () => Promise<void>;
+  isConsolidating: boolean;
+  apiKey: string;
+}
+
 // --- COMPONENT: Temporal Chart (Line Graph) ---
-const TemporalChart = ({ papers }: { papers: Paper[] }) => {
+const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const [metric, setMetric] = useState<'driver' | 'response'>('driver');
   const [categoryFilter, setCategoryFilter] = useState<string>('Top 5'); 
-  const [isGrouped, setIsGrouped] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const data = useMemo(() => {
     const years = Array.from(new Set(papers.map(p => parseInt(p.year) || 0))).filter(y => y > 1900).sort();
@@ -1045,8 +1114,9 @@ const TemporalChart = ({ papers }: { papers: Paper[] }) => {
     const minYear = years[0]; const maxYear = years[years.length - 1];
     const counts: Record<string, number> = {};
     papers.forEach(p => { 
-        const d = isGrouped ? (p.driverGroup || p.driver) : p.driver;
-        const r = isGrouped ? (p.responseGroup || p.response) : p.response;
+        // Use Grouped terms if the respective toggle is active
+        const d = isDriverGrouped ? (p.driverGroup || p.driver) : p.driver;
+        const r = isResponseGrouped ? (p.responseGroup || p.response) : p.response;
         const val = metric === 'driver' ? d : r; 
         counts[val] = (counts[val] || 0) + 1; 
     });
@@ -1056,8 +1126,8 @@ const TemporalChart = ({ papers }: { papers: Paper[] }) => {
     const lines = selectedCats.map(cat => {
         const points = yearSpan.map(year => { 
              const count = papers.filter(p => {
-                 const d = isGrouped ? (p.driverGroup || p.driver) : p.driver;
-                 const r = isGrouped ? (p.responseGroup || p.response) : p.response;
+                 const d = isDriverGrouped ? (p.driverGroup || p.driver) : p.driver;
+                 const r = isResponseGrouped ? (p.responseGroup || p.response) : p.response;
                  const val = metric === 'driver' ? d : r;
                  return (parseInt(p.year) == year) && val === cat;
              }).length; 
@@ -1067,7 +1137,7 @@ const TemporalChart = ({ papers }: { papers: Paper[] }) => {
     });
     let maxY = 0; lines.forEach(l => l.points.forEach(p => { if (p.count > maxY) maxY = p.count; })); maxY = Math.max(maxY, 5);
     return { yearSpan, lines, maxY, allCats: Object.keys(counts).sort() };
-  }, [papers, metric, categoryFilter, isGrouped]);
+  }, [papers, metric, categoryFilter, isDriverGrouped, isResponseGrouped]);
 
   if (!data) return <div className="flex h-full items-center justify-center text-slate-400">No date data available.</div>;
   const width = 800; const height = 400; const padding = { top: 40, right: 120, bottom: 50, left: 50 }; const graphW = width - padding.left - padding.right; const graphH = height - padding.top - padding.bottom; const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'];
@@ -1079,7 +1149,37 @@ const TemporalChart = ({ papers }: { papers: Paper[] }) => {
         <div className="flex justify-between items-center mb-4 border-b border-slate-200 pb-3">
             <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="h-4 w-4"/> Trends Over Time</h3>
             <div className="flex items-center gap-3">
-                 <button onClick={() => setIsGrouped(!isGrouped)} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isGrouped ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white text-slate-500'}`} title="Collapse synonyms">{isGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Terms</button>
+                {/* GROUP TERMS BUTTON (LOCAL) */}
+                <button 
+                  onClick={handleOptimizeTerms}
+                  disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
+                  title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                    ${papers.length === 0 || isConsolidating || !apiKey
+                      ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                      : isTermsNormalized 
+                        ? 'text-green-700 border-green-200 bg-green-50'
+                        : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                      }`}
+                >
+                  {isConsolidating ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : isTermsNormalized ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <Wrench className="h-3 w-3" />
+                  )}
+                  {isConsolidating 
+                    ? 'Normalizing...' 
+                    : isTermsNormalized
+                      ? 'Terms Grouped'
+                      : 'Group Terms'}
+                </button>
+                 {/* DRIVER GROUP TOGGLE (New) */}
+                 <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+                 {/* RESPONSE GROUP TOGGLE (New) */}
+                 <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
+
                  <div className="flex bg-white rounded border border-slate-300 overflow-hidden">
                     <button onClick={() => { setMetric('driver'); setCategoryFilter('Top 5'); }} className={`px-3 py-1 text-xs font-bold ${metric === 'driver' ? 'bg-slate-100 text-emerald-700' : 'text-slate-500'}`}>Drivers</button>
                     <div className="w-px bg-slate-300"></div>
@@ -1111,23 +1211,37 @@ const TemporalChart = ({ papers }: { papers: Paper[] }) => {
   );
 };
 
+interface GapHeatmapProps {
+  papers: Paper[];
+  isDriverGrouped: boolean;
+  isResponseGrouped: boolean;
+  setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
+  setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
+  isTermsNormalized: boolean;
+  // New props for the button:
+  handleOptimizeTerms: () => Promise<void>;
+  isConsolidating: boolean;
+  apiKey: string;
+}
+
 // --- COMPONENT: Gap Heatmap ---
-const GapHeatmap = ({ papers }: { papers: Paper[] }) => {
-  const [localGrouped, setLocalGrouped] = useState(false);
+const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const data = useMemo(() => {
-    const drivers = Array.from(new Set(papers.map(p => localGrouped ? (p.driverGroup || p.driver) : p.driver))).sort();
-    const responses = Array.from(new Set(papers.map(p => localGrouped ? (p.responseGroup || p.response) : p.response))).sort();
+    // Use Grouped terms if the respective toggle is active
+    const drivers = Array.from(new Set(papers.map(p => isDriverGrouped ? (p.driverGroup || p.driver) : p.driver))).sort();
+    const responses = Array.from(new Set(papers.map(p => isResponseGrouped ? (p.responseGroup || p.response) : p.response))).sort();
+    
     const topDrivers = drivers.slice(0, 15); const topResponses = responses.slice(0, 15);
     const matrix: Record<string, Record<string, number>> = {};
     topDrivers.forEach(d => { matrix[d] = {}; topResponses.forEach(r => matrix[d][r] = 0); });
     papers.forEach(p => { 
-        const d = localGrouped ? (p.driverGroup || p.driver) : p.driver;
-        const r = localGrouped ? (p.responseGroup || p.response) : p.response;
+        const d = isDriverGrouped ? (p.driverGroup || p.driver) : p.driver;
+        const r = isResponseGrouped ? (p.responseGroup || p.response) : p.response;
         if (topDrivers.includes(d) && topResponses.includes(r)) matrix[d][r]++; 
     });
     return { topDrivers, topResponses, matrix };
-  }, [papers, localGrouped]);
+  }, [papers, isDriverGrouped, isResponseGrouped]);
 
   const cellSize = 30; const xLabelHeight = 120; const yLabelWidth = 140;
   const width = yLabelWidth + (data.topResponses.length * cellSize) + 20;
@@ -1141,8 +1255,37 @@ const GapHeatmap = ({ papers }: { papers: Paper[] }) => {
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-bold text-slate-700 flex items-center gap-2"><Grid3X3 className="h-4 w-4"/> Research Gap Heatmap</h3>
         <div className="flex gap-2">
-            {/* LOCAL GROUP TOGGLE - Moved Here */}
-            <button onClick={() => setLocalGrouped(!localGrouped)} className={`flex gap-1 px-2 py-1 border rounded text-xs font-medium ${localGrouped ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white text-slate-500'}`}>{localGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Terms</button>
+            {/* GROUP TERMS BUTTON (LOCAL) */}
+            <button 
+              onClick={handleOptimizeTerms}
+              disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
+              title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
+              className={`flex items-center gap-2 px-3 py-1.5 border rounded text-xs font-bold transition-colors
+                ${papers.length === 0 || isConsolidating || !apiKey
+                  ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                  : isTermsNormalized 
+                    ? 'text-green-700 border-green-200 bg-green-50'
+                    : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                  }`}
+            >
+              {isConsolidating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : isTermsNormalized ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Wrench className="h-3 w-3" />
+              )}
+              {isConsolidating 
+                ? 'Normalizing...' 
+                : isTermsNormalized
+                  ? 'Terms Grouped'
+                  : 'Group Terms'}
+            </button>
+            {/* DRIVER GROUP TOGGLE (New) */}
+            <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+            {/* RESPONSE GROUP TOGGLE (New) */}
+            <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
+
             <button onClick={handleExportDataCSV} className="text-xs flex items-center gap-1 text-slate-600 hover:text-emerald-600 font-medium cursor-pointer"><Download className="h-3 w-3"/> Data</button>
             <button onClick={handleExportPNG} className="text-xs flex items-center gap-1 text-slate-600 hover:text-blue-600 font-medium cursor-pointer"><ImageIcon className="h-3 w-3"/> Image</button>
         </div>
@@ -1280,6 +1423,12 @@ const App = () => {
   const [error, setError] = useState<string | null>(null);
   const [enableSpecies, setEnableSpecies] = useState(true); 
   const [isOptimized, setIsOptimized] = useState(false); 
+  
+  // New States for Grouping Toggle
+  const [isDriverGrouped, setIsDriverGrouped] = useState(false);
+  const [isResponseGrouped, setIsResponseGrouped] = useState(false);
+  // NEW: Separate state for Terms Normalization status
+  const [isTermsNormalized, setIsTermsNormalized] = useState(false);
   
   const [consolidationSuggestions, setConsolidationSuggestions] = useState<ConsolidationSuggestion[] | null>(null);
   const [isConsolidationComplete, setIsConsolidationComplete] = useState(false); 
@@ -1425,6 +1574,65 @@ const App = () => {
       setDraggedItem(null);
   };
 
+  const handleOptimizeTerms = async () => {
+    if (!apiKey || papers.length === 0) return;
+    setIsConsolidating(true); 
+    setRetryStatus("Running metadata and group normalization...");
+    setError(null);
+
+    try {
+        const optimization = await optimizeStructureWithGemini(
+            papers,
+            apiKey,
+            reviewTopic,
+            selectedModel,
+            enableSpecies,
+            (msg) => setRetryStatus(msg)
+        );
+
+        if (optimization && optimization.moves && optimization.moves.length > 0) {
+            const movesMap = new Map(optimization.moves.map(m => [m.paper_id, m]));
+            
+            setPapers(prevPapers => prevPapers.map(p => {
+                const move = movesMap.get(p.id);
+                if (move) {
+                    return {
+                        ...p,
+                        // Normalize primary fields (Driver/Response/Location/Species)
+                        driver: move.new_driver || p.driver,
+                        response: move.new_response || p.response,
+                        location: move.new_location || p.location,
+                        species: move.new_species || p.species,
+                        
+                        // Populate grouping fields with the new groups
+                        driverGroup: move.new_driver_group || (move.new_driver || p.driver),
+                        responseGroup: move.new_response_group || (move.new_response || p.response),
+                        
+                        // Update Category/Theme (often suggested for normalization)
+                        category: move.new_category || p.category,
+                        theme: move.new_theme || p.theme,
+                    };
+                }
+                return p;
+            }));
+            setIsTermsNormalized(true); // Only set separate normalization state
+            setError(`✅ Metadata optimization complete. Normalized ${optimization.moves.length} fields.`);
+        } else {
+            setIsTermsNormalized(true); 
+            setError("✅ Metadata optimization complete. No significant field changes suggested.");
+        }
+
+        // After initial optimization, set both toggles to grouped state to reflect the refined data immediately.
+        setIsDriverGrouped(true);
+        setIsResponseGrouped(true);
+
+    } catch (err: any) {
+        setError(`Optimization failed: ${err.message}`);
+    } finally {
+        setIsConsolidating(false);
+        setRetryStatus('');
+    }
+};
 
   const handleProcessAll = async (resumeFromIndex: number = 0, resumeText: string = '') => {
     if (!inputText.trim() && !resumeText) { setError("Please paste your full list of papers first."); return; }
@@ -1495,9 +1703,9 @@ const App = () => {
           category: p.main_category, 
           theme: p.sub_theme,
           driver: p.driver_variable || "Unspecified", 
-          driverGroup: p.driver_variable, 
+          driverGroup: p.driver_variable || "Unspecified", 
           response: p.response_variable || "Unspecified", 
-          responseGroup: p.response_variable,
+          responseGroup: p.response_variable || "Unspecified",
           effectDirection: (p.effect_direction as any) || 'Unclear',
           location: p.study_location || "Unspecified", 
           species: p.study_species || "Unspecified",
@@ -1554,7 +1762,7 @@ const App = () => {
            setError(`✅ Done! Processed ${accumulatedPapers.length} papers.`);
         }
       }
-      setIsOptimized(true);
+      // Note: We intentionally DO NOT set setIsOptimized(true) here. It should only be set after running the specific optimization step.
 
       setInputText(''); 
       setTimeout(() => resultsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
@@ -1599,15 +1807,15 @@ const App = () => {
                   category: p.main_category, 
                   theme: p.sub_theme,
                   driver: p.driver_variable || "Unspecified", 
-                  driverGroup: p.driver_variable, 
+                  driverGroup: p.driver_variable || "Unspecified", 
                   response: p.response_variable || "Unspecified", 
-                  responseGroup: p.response_variable,
+                  responseGroup: p.response_variable || "Unspecified",
                   effectDirection: (p.effect_direction as any) || 'Unclear',
                   location: p.study_location || "Unspecified", 
                   species: p.study_species || "Unspecified",
                   keyFinding: p.key_finding, 
                   impactKeywords: p.impact_keywords, 
-                  batchId: localBatchCounter, 
+                  batchId: batchCount + 1, // Use the next batch ID
                   authors: p.authors, 
                   year: p.year, 
                   journal: p.journal, 
@@ -1615,6 +1823,7 @@ const App = () => {
                   modelUsed: activeModelId
             }));
             setPapers(prev => [...prev, ...newPapers]);
+            setBatchCount(prev => prev + 1); // Increment batch count
             
             handleProcessAll(resumeIndex + 1); 
         })
@@ -1625,7 +1834,7 @@ const App = () => {
         });
   };
 
-  const handleClearAll = () => { setPapers([]); setBatchCount(0); setInputText(''); setError(null); setConsolidationSuggestions(null); setIsConsolidationComplete(false); setFilteredPapers(null); setIsOptimized(false); setRejectedSuggestions([]); setLockedItems([]); };
+  const handleClearAll = () => { setPapers([]); setBatchCount(0); setInputText(''); setError(null); setConsolidationSuggestions(null); setIsConsolidationComplete(false); setFilteredPapers(null); setIsOptimized(false); setIsTermsNormalized(false); setRejectedSuggestions([]); setLockedItems([]); setIsDriverGrouped(false); setIsResponseGrouped(false); };
   
   // NEW: Accept Suggestion Handler
   const handleAcceptSuggestion = (suggestionId: string) => {
@@ -1736,7 +1945,7 @@ const App = () => {
       }
 
       setPapers(newPapers);
-      setIsOptimized(true);
+      setIsOptimized(true); // Structure is optimized, but not terms
       
       // Remove accepted suggestion from list
       setConsolidationSuggestions(prev => prev ? prev.filter(s => s.id !== suggestionId) : null);
@@ -1857,7 +2066,9 @@ const App = () => {
   const handleConsolidateThemes = async () => { 
       if (papers.length === 0 || !apiKey) return; 
       setIsConsolidating(true); 
-      setConsolidationSuggestions(null); 
+      setConsolidationSuggestions(null);
+      // Reset complete flag to hide the "Refine" message while processing
+      setIsConsolidationComplete(false); 
       setRetryStatus("Consolidating Taxonomy...");
       
       try {
@@ -2115,7 +2326,27 @@ const App = () => {
 
   const uniqueCategories = Array.from(new Set(papers.map(p => p.category))).sort();
 
-  const renderListView = () => (
+  const renderListView = () => {
+    
+    // Check if we should show the hint (only if NO suggestions are pending)
+    const showConsolidationHint = papers.length > 0 && (!consolidationSuggestions || consolidationSuggestions.length === 0) && !isConsolidating;
+
+    let consolidationHintMessage = "";
+    let consolidationHintTitle = "";
+    let consolidationHintIcon = <Layers className='h-5 w-5' />;
+
+    if (showConsolidationHint) {
+        if (!isConsolidationComplete) {
+            consolidationHintTitle = "Optimize Section Structure";
+            consolidationHintMessage = "Click **Suggest Merges** to optimize your manuscript structure. The AI will analyze your Sub-Sections to suggest mergers, moves, and renames, helping you build a cleaner Table of Contents. You can manually edit or drag-and-drop sections after running.";
+        } else {
+            consolidationHintTitle = "Refine Section Structure";
+            consolidationHintIcon = <RefreshCw className='h-5 w-5' />;
+            consolidationHintMessage = "The previous optimization is complete. To continue refining your Table of Contents, click **Suggest Merges** again. You should re-run this step repeatedly until the AI confirms the structure is optimal, or you can manually adjust sections as needed.";
+        }
+    }
+    
+    return (
       <>
         {retryStatus && isBulkSynthesizing && (
             <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 p-3 rounded border border-amber-100 font-medium mb-4">
@@ -2125,15 +2356,13 @@ const App = () => {
         )}
 
         {/* Theme Consolidation Explanation and Suggestions Area */}
-        {papers.length > 0 && consolidationSuggestions === null && !isConsolidationComplete && (
+        {showConsolidationHint && (
             <div className="p-4 rounded-lg shadow-md border bg-blue-50 border-blue-200 mb-4">
                 <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-blue-800">
-                    <Layers className='h-5 w-5' />
-                    Optimize Section Structure
+                    {consolidationHintIcon}
+                    {consolidationHintTitle}
                 </h3>
-                <p className='text-sm text-blue-700'>
-                    Click **Suggest Theme Merges** to optimize your manuscript structure. The AI will analyze your Sub-Sections to suggest mergers, helping you build a cleaner Table of Contents. Press the button repeatedly until you are happy with the structure.
-                </p>
+                <p className='text-sm text-blue-700' dangerouslySetInnerHTML={{ __html: consolidationHintMessage }} />
             </div>
         )}
         
@@ -2239,6 +2468,7 @@ const App = () => {
                    draggable={!isCatLocked}
                    onDragStart={(e) => handleDragStart(e, { type: 'cat', name: cat })}
                    style={{ opacity: draggedItem?.type === 'cat' && draggedItem.name === cat ? 0.5 : 1, border: dragOverTarget === `cat:${cat}` ? '2px solid #3b82f6' : '' }}
+                   onDragLeave={handleDragLeave}
               >
                 <div onClick={() => setExpandedCategories(p => ({...p, [cat]: !p[cat]}))} className={`p-3 border-b flex justify-between cursor-pointer hover:bg-slate-50 ${isCatLocked ? 'bg-orange-50 border-orange-100' : 'bg-slate-50 border-slate-100'}`}>
                     <div className="flex items-center gap-2 flex-1">
@@ -2286,6 +2516,7 @@ const App = () => {
                            onDragOver={(e) => handleDragOver(e, `theme:${cat}|||${theme}`)}
                            onDrop={(e) => handleDrop(e, { type: 'theme', name: theme, parentCat: cat })}
                            style={{ opacity: draggedItem?.type === 'theme' && draggedItem.name === theme && draggedItem.parentCat === cat ? 0.5 : 1, border: dragOverTarget === `theme:${cat}|||${theme}` ? '2px solid #3b82f6' : '' }}
+                           onDragLeave={handleDragLeave}
                       >
                         <div className={`flex justify-between items-center p-2 pl-8 hover:bg-slate-50 ${isThemeLocked ? 'bg-orange-50/30' : ''}`}>
                             <div onClick={() => setExpandedThemes(p => ({...p, [key]: !p[key]}))} className="flex items-center gap-2 cursor-pointer flex-1">
@@ -2339,7 +2570,8 @@ const App = () => {
             )
         })}
       </>
-  );
+    );
+  };
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900 font-sans">
@@ -2417,10 +2649,11 @@ const App = () => {
              </div>
              
              <div className='flex items-center gap-2'>
+                
                 <button onClick={handleOverallSynthesisAndExport} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-yellow-50 text-yellow-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <Zap className="h-3 w-3 fill-yellow-700"/>} Bulk: Sub-Themes</button>
                 <button onClick={handleBulkMainSynthesis} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-orange-50 text-orange-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <FileText className="h-3 w-3 fill-orange-700"/>} Bulk: Main Categories</button>
                 
-                {/* Theme Consolidation Button - Removed caption as requested */}
+                {/* Theme Consolidation Button */}
                 <button 
                   onClick={handleConsolidateThemes}
                   disabled={papers.length === 0 || isConsolidating || !apiKey}
@@ -2441,7 +2674,7 @@ const App = () => {
                   {isConsolidating 
                     ? 'Analyzing...' 
                     : isConsolidationComplete
-                      ? 'Re-check'
+                      ? 'Re-check Structure'
                       : 'Suggest Merges'}
                 </button>
 
@@ -2477,7 +2710,18 @@ const App = () => {
                         {/* Removed the 'Manuscript Ready' badge */}
                     </div>
                     <div className="flex-1 min-h-[500px]">
-                        <FlowDiagram papers={papers} onFilter={setFilteredPapers} />
+                        <FlowDiagram 
+                          papers={papers} 
+                          onFilter={setFilteredPapers} 
+                          isDriverGrouped={isDriverGrouped} 
+                          isResponseGrouped={isResponseGrouped} 
+                          setIsDriverGrouped={setIsDriverGrouped}
+                          setIsResponseGrouped={setIsResponseGrouped}
+                          isTermsNormalized={isTermsNormalized}
+                          handleOptimizeTerms={handleOptimizeTerms}
+                          isConsolidating={isConsolidating}
+                          apiKey={apiKey}
+                        />
                     </div>
                     {filteredPapers && (
                         <div className="mt-6 border-t border-slate-200 pt-4 animate-in slide-in-from-bottom-4">
@@ -2497,12 +2741,32 @@ const App = () => {
                 <div className="h-full">
                     <div className="mb-4 text-xs text-slate-500">Visualize how research topics have shifted over the years.</div>
                     <div className="h-[500px]">
-                        <TemporalChart papers={papers} />
+                        <TemporalChart 
+                          papers={papers} 
+                          isDriverGrouped={isDriverGrouped} 
+                          isResponseGrouped={isResponseGrouped} 
+                          setIsDriverGrouped={setIsDriverGrouped}
+                          setIsResponseGrouped={setIsResponseGrouped}
+                          isTermsNormalized={isTermsNormalized}
+                          handleOptimizeTerms={handleOptimizeTerms}
+                          isConsolidating={isConsolidating}
+                          apiKey={apiKey}
+                        />
                     </div>
                 </div>
             ) : viewMode === 'gap_analysis' ? (
                <div className="h-full border border-slate-200 rounded-lg overflow-hidden flex flex-col">
-                  <GapHeatmap papers={papers} />
+                  <GapHeatmap 
+                    papers={papers} 
+                    isDriverGrouped={isDriverGrouped} 
+                    isResponseGrouped={isResponseGrouped} 
+                    setIsDriverGrouped={setIsDriverGrouped}
+                    setIsResponseGrouped={setIsResponseGrouped}
+                    isTermsNormalized={isTermsNormalized}
+                    handleOptimizeTerms={handleOptimizeTerms}
+                    isConsolidating={isConsolidating}
+                    apiKey={apiKey}
+                  />
                </div>
             ) : viewMode === 'geo_analysis' ? (
                <div className="h-full border border-slate-200 rounded-lg overflow-hidden p-4 bg-white">
