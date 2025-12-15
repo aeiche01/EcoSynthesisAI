@@ -488,10 +488,10 @@ async function analyzeWithGemini(
        ${enableSpecies ? "- 'study_species': Species name or group. DO NOT include counts/numbers (e.g., do NOT say '18 bird species', say 'Birds (General)' or 'Aves'). Use common name if available." : ""}
     5. Generate 'key_finding', 'impact_keywords', and 'short_citation'.
     
-    CRITICAL RULES:
-    - **OUTCOME-BASED CATEGORIZATION:** Group papers based on the *Response Variable* (Outcome), not just the Driver.
-    - **NO LAZY MATCHING:** Do not slot a paper about 'X' into an existing category named 'X and Y'. Create a new, specific category 'X' instead.
-    - **DIRECTIONALITY STANDARD:** "Positive" and "Negative" refer to the correlation direction assuming the Driver INCREASES.
+    **CRITICAL RULE FOR MULTIPLE FINDINGS:**
+    - If a single paper contains **multiple distinct experiments** or investigates **distinct Driver-Response pairs** (e.g. Temperature -> Growth AND pH -> Survival), create **SEPARATE** entries in the 'papers' array for each pair.
+    - Each entry should share the same title/authors/citation but have specific drivers, responses, and key findings for that pair.
+    - Do NOT create duplicate entries if they are synonyms; only for distinct findings.
 
     EXISTING TAXONOMY HINT: ${taxonomyHint}
 
@@ -1761,8 +1761,8 @@ const App = () => {
         } else {
            setError(`✅ Done! Processed ${accumulatedPapers.length} papers.`);
         }
+        setIsOptimized(true);
       }
-      // Note: We intentionally DO NOT set setIsOptimized(true) here. It should only be set after running the specific optimization step.
 
       setInputText(''); 
       setTimeout(() => resultsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
@@ -2295,7 +2295,12 @@ const App = () => {
   
   const exportStateJSON = () => { 
     if (papers.length === 0) return; 
-    const blob = new Blob([JSON.stringify({ papers, reviewTopic }, null, 2)], { type: 'application/json' }); 
+    const dataToSave = {
+        papers,
+        reviewTopic,
+        isTermsNormalized // Save this state!
+    };
+    const blob = new Blob([JSON.stringify(dataToSave, null, 2)], { type: 'application/json' }); 
     const link = document.createElement("a"); 
     link.href = URL.createObjectURL(blob); 
     link.download = "state.json"; 
@@ -2317,6 +2322,17 @@ const App = () => {
             const newExpanded: any = {}; 
             json.papers.forEach((p: Paper) => newExpanded[p.category] = true); 
             setExpandedCategories(newExpanded); 
+            
+            // Restore normalization state
+            setIsTermsNormalized(json.isTermsNormalized || false);
+            if (json.isTermsNormalized) {
+                 // If previously normalized, default groupings to ON
+                 setIsDriverGrouped(true);
+                 setIsResponseGrouped(true);
+            }
+            // If data is loaded, assume it's not preliminary structure unless it is empty
+            setIsOptimized(true);
+
             setError(`Loaded ${json.papers.length} papers.`); 
           } 
         } catch { setError("Invalid JSON"); } 
