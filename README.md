@@ -60,6 +60,7 @@ As of December 2025, the free tier works well with the Gemma model while Gemini 
   - **Gemma 3 27B**  
     Higher rate limits. Use this if you hit Gemini’s quota.
 
+    Note that *every single batch* counts as a query. So if you click the run button once and the tool processes it in 20 batches, you will hit Gemini's limits.
 - **Input Data:**  
   Paste your raw list of papers into the large text box.
 
