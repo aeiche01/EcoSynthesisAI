@@ -134,7 +134,7 @@ Standard folder view.
 ### Suggest Merges
 
 Click **Suggest Merges** to review and improve the taxonomy structure.
-
+***IT IS INTENDED THAT YOU PUSH THIS BUTTON MORE THAN ONCE.*** After you have gone through one round of suggested merges, push the button again to review the taxonomy structure. EcoSynthesisAI will likely see things it missed the first time.
 The system may suggest:
 
 - **Merging overlapping sub-themes** within a category  
