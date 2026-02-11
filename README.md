@@ -125,11 +125,39 @@ Switch between analysis modes using the tabs at the top of the interface.
 ### 📁 List View
 Standard folder view.
 
-**Features:**
+**Synthesis:**
 - Click the **⚡ Sparkle Icon** next to a sub-theme to generate:  
   - A written synthesis  
   - A contradiction analysis  
     - e.g., highlighting conflicting findings across papers
+- The **Synthesis** buttons at the the top will perform this same action across multiple categories at once. *Synthesize Sub-Themes* will perform this analysis for every sub-category, and *Synthesize Main Themes* will perform this analysis for every main category.
+### Suggest Merges
+
+Click **Suggest Merges** to review and improve the taxonomy structure.
+
+The system may suggest:
+
+- **Merging overlapping sub-themes** within a category  
+- **Moving a sub-theme** to a more appropriate category  
+- **Merging duplicate or redundant categories**  
+- **Renaming unclear or overly broad categories**
+
+Suggestions are evidence-based and reference patterns found in paper titles.
+
+You can accept or reject each suggestion individually.  
+If no meaningful improvements are found, **no changes are suggested**.
+
+#### Notes on locking and validation
+
+- If the system has no clear structural improvements left to make, it may begin flip-flopping (e.g. suggesting changes that undo earlier accepted suggestions).
+  - If this happens, you can click the **🔒 Lock icon** on a category or sub-theme to prevent further suggestions involving it.
+  - Locked items will be excluded from future merge or move proposals.
+
+- You may **rename categories or sub-themes manually at any time**.
+
+- If a suggestion involves **moving a sub-theme to a different category**, it is strongly recommended to click the **Validate** button (shown in **purple** with a verification tooltip).
+  - This triggers an additional AI check using a **larger set of papers** to confirm that the proposed move is appropriate.
+
 
 ### 🔀 Flow Diagram
 A Sankey diagram linking **Drivers (Causes)** to **Responses (Effects)**.
