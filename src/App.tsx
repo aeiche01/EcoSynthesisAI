@@ -136,7 +136,7 @@ interface AuditResult {
 interface ConsolidationSuggestion {
   id: string; 
   main_category: string;
-  isVerified?: boolean; 
+  isVerified?: boolean; // New flag for verification status
   suggested_merge?: {
     themes_to_combine: string[];
     new_theme_name: string;
@@ -202,12 +202,6 @@ interface OptimizationResult {
   }[];
 }
 
-interface BulkSection {
-  category: string;
-  theme?: string;
-  result: SynthesisResult;
-}
-
 interface SynthesisModalProps { 
   isOpen: boolean; 
   onClose: () => void; 
@@ -215,46 +209,15 @@ interface SynthesisModalProps {
   isSynthesizing: boolean; 
   retryStatus: string; 
   result: SynthesisResult | null; 
-  bulkData?: BulkSection[] | null;
 }
 
 interface DragItem {
   type: 'cat' | 'theme';
   name: string;
-  parentCat?: string; 
+  parentCat?: string; // Only for themes
 }
 
 // --- Helper Functions ---
-
-// NEW: SVG Text Wrapper Helper
-const WrappedText = ({ x, y, text, width, fontSize, lineHeight = 1.2, align = "start", color = "#475569", transform }: any) => {
-  const words = text.split(/\s+/);
-  const lines = [];
-  let currentLine = words[0];
-
-  // Rough character estimation: width / (fontSize * 0.6)
-  const maxChars = width / (fontSize * 0.6); 
-
-  for (let i = 1; i < words.length; i++) {
-    if (currentLine.length + 1 + words[i].length <= maxChars) {
-      currentLine += " " + words[i];
-    } else {
-      lines.push(currentLine);
-      currentLine = words[i];
-    }
-  }
-  lines.push(currentLine);
-
-  return (
-    <text x={x} y={y} fontSize={fontSize} fill={color} textAnchor={align} transform={transform}>
-      {lines.map((line, i) => (
-        <tspan key={i} x={x} dy={i === 0 ? 0 : `${lineHeight}em`}>
-          {line}
-        </tspan>
-      ))}
-    </text>
-  );
-};
 
 function getSuggestionSignature(s: ConsolidationSuggestion): string {
   if (s.suggested_merge) {
@@ -301,8 +264,15 @@ function createBatches(text: string, maxChunkSize: number): string[] {
       break;
     }
     
+    // 1. Try to split at Double Newline (Paragraph break) to avoid cutting Citation-Abstract pairs
     let cutIndex = remaining.lastIndexOf('\n\n', maxChunkSize);
-    if (cutIndex === -1) cutIndex = remaining.lastIndexOf('\n', maxChunkSize);
+    
+    // 2. If no double newline, try standard newline
+    if (cutIndex === -1) {
+        cutIndex = remaining.lastIndexOf('\n', maxChunkSize);
+    }
+    
+    // 3. Last resort: Hard cut (very rare)
     if (cutIndex === -1) cutIndex = maxChunkSize;
 
     batches.push(remaining.slice(0, cutIndex));
@@ -370,7 +340,13 @@ class ApiKeyError extends Error {
 
 // --- API Logic Functions ---
 
-async function fetchAI(modelId: string, apiKey: string, systemPrompt: string, userPrompt: string, responseSchema: any = null): Promise<any> {
+async function fetchAI(
+  modelId: string, 
+  apiKey: string, 
+  systemPrompt: string, 
+  userPrompt: string,
+  responseSchema: any = null // keeping signature compatibility
+): Promise<any> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
   const isGemma = modelId.toLowerCase().includes('gemma');
 
@@ -405,6 +381,7 @@ async function fetchAI(modelId: string, apiKey: string, systemPrompt: string, us
 
     if (status === 400 || status === 403) throw new ApiKeyError("Invalid API Key or Permission Denied.");
     if (status === 503) throw new RetryableError("Model Overloaded (503)");
+    
     if (status === 429) {
       const msg = errMessage.toLowerCase();
       if (msg.includes('quota') || msg.includes('exhausted')) {
@@ -415,81 +392,393 @@ async function fetchAI(modelId: string, apiKey: string, systemPrompt: string, us
     }
     throw new Error(errMessage);
   }
-  return await response.json();
+
+  const data = await response.json();
+  return data;
 }
 
-async function verifyMoveWithGemini(theme: string, currentCat: string, targetCat: string, titles: string[], key: string, modelId: string, onStatusUpdate: (msg: string) => void): Promise<{ isValid: boolean, reason: string }> {
-    const systemPrompt = `You are a strict data auditor. TASK: Verify if the sub-theme "${theme}" (currently in "${currentCat}") truly belongs in "${targetCat}". EVIDENCE: Papers: ${titles.map(t => `- ${t}`).join('\n')} OUTPUT JSON: { "isValid": boolean, "reason": "..." }`;
+// NEW: Helper to verify move suggestion with more papers
+async function verifyMoveWithGemini(
+    theme: string,
+    currentCat: string,
+    targetCat: string,
+    titles: string[],
+    key: string,
+    modelId: string,
+    onStatusUpdate: (msg: string) => void
+): Promise<{ isValid: boolean, reason: string }> {
+    const systemPrompt = `
+      You are a strict data auditor.
+      TASK: Verify if the sub-theme "${theme}" (currently in "${currentCat}") truly belongs in "${targetCat}".
+      
+      EVIDENCE: Here are paper titles from this sub-theme:
+      ${titles.map(t => `- ${t}`).join('\n')}
+      
+      INSTRUCTIONS:
+      - If the papers generally fit the definition of "${targetCat}" better than "${currentCat}", return isValid: true.
+      - If the papers are mixed or actually fit "${currentCat}" fine, return isValid: false.
+      - Provide a concise reason citing specific patterns in the titles.
+      
+      OUTPUT JSON: { "isValid": boolean, "reason": "..." }
+    `;
+    
     onStatusUpdate("Verifying with expanded paper list...");
     const data = await fetchAI(modelId, key, systemPrompt, "Verify this move.", true);
-    return safeJsonParse<{ isValid: boolean, reason: string }>(data.candidates?.[0]?.content?.parts?.[0]?.text).data;
+    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsed = safeJsonParse<{ isValid: boolean, reason: string }>(textResponse);
+    return parsed.data;
 }
 
-async function reverseSuggestionWithGemini(sourceCat: string, targetCat: string, key: string, modelId: string, onStatusUpdate: (msg: string) => void): Promise<{ reason: string }> {
-    const systemPrompt = `You are an expert taxonomist. CONTEXT: Suggestion to merge "${sourceCat}" INTO "${targetCat}". TASK: Generate rationale for INVERSE: merging "${targetCat}" INTO "${sourceCat}". OUTPUT JSON: { "reason": "..." }`;
+// NEW: Helper to generate reverse suggestion
+async function reverseSuggestionWithGemini(
+    sourceCat: string,
+    targetCat: string,
+    key: string,
+    modelId: string,
+    onStatusUpdate: (msg: string) => void
+): Promise<{ reason: string }> {
+    const systemPrompt = `
+      You are an expert taxonomist.
+      CONTEXT: It was suggested to merge "${sourceCat}" INTO "${targetCat}".
+      TASK: Generate a rationale for the INVERSE: merging "${targetCat}" INTO "${sourceCat}" instead.
+      
+      Assume the user wants to flip the hierarchy/direction. Provide a logical reason why "${targetCat}" might be better placed as a subsection of "${sourceCat}", or why "${sourceCat}" is the better parent category.
+      
+      OUTPUT JSON: { "reason": "..." }
+    `;
+
     onStatusUpdate("Analyzing reverse logic...");
     const data = await fetchAI(modelId, key, systemPrompt, "Generate inverse rationale.", true);
-    return safeJsonParse<{ reason: string }>(data.candidates?.[0]?.content?.parts?.[0]?.text).data;
+    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsed = safeJsonParse<{ reason: string }>(textResponse);
+    return parsed.data;
 }
 
-async function analyzeWithGemini(textBatch: string, currentTaxonomy: Taxonomy, key: string, topic: string, modelId: string, enableSpecies: boolean, onStatusUpdate: (msg: string) => void): Promise<{ result: AnalysisResult, truncated: boolean }> {
+async function analyzeWithGemini(
+  textBatch: string,
+  currentTaxonomy: Taxonomy,
+  key: string,
+  topic: string,
+  modelId: string,
+  enableSpecies: boolean,
+  onStatusUpdate: (msg: string) => void
+): Promise<{ result: AnalysisResult, truncated: boolean }> {
   const effectiveTopic = topic.trim() || "General Academic Research";
-  const systemPrompt = `You are an expert systematic review data extractor. Process raw text for review on "${effectiveTopic}".
-    INSTRUCTIONS: Extract metadata (title, authors, year, journal). Condense Abstract. Determine 'main_category' & 'sub_theme'.
-    EXTRACT VARIABLES: 'driver_variable', 'response_variable', 'effect_direction', 'study_location'${enableSpecies ? ", 'study_species'" : ""}.
-    OUTPUT STRICT JSON: { "papers": [{ "title": "...", "main_category": "...", "sub_theme": "...", "driver_variable": "...", "response_variable": "...", "effect_direction": "...", "study_location": "...", ${enableSpecies ? '"study_species": "...",' : ''} "key_finding": "...", "impact_keywords": "...", "short_citation": "..." }] }`;
+  const taxonomyHint = JSON.stringify(currentTaxonomy);
+
+  const systemPrompt = `
+    You are an expert systematic review data extractor. Process the batch of raw text (Title, Abstract, Authors, Year, Journal) for a review on "${effectiveTopic}".
+
+    INSTRUCTIONS:
+    1. Extract metadata (title, authors, year, journal).
+       - **CRITICAL: SEPARATE CITATION FROM TITLE.**
+       - **NUMBERED LISTS:** If text starts with "1.", "25.", etc., ignore the number.
+       - **VERBOSE AUTHORS:** Handle long author lists (e.g. "Smith and Jones and Doe"). The Title usually starts *after* the year (e.g. "(2022). Title...").
+       - **CLEAN TITLES:** If a title appears with a translation (e.g. "English Title [Spanish Title]" or "Title [Translation]"), **ONLY extract the English title**. Discard the translated version and any brackets.
+    2. Condense Abstract into 'abstract_summary'.
+    3. Determine 'main_category' (high-level domain) and 'sub_theme' (specific research topic).
+       - **Specific Domains:** Use specific, descriptive domains like "Biogeography", "Ecophysiology", "Community Dynamics", "Urban Ecology".
+       - **Avoid Broad Fields:** Do NOT use generic terms like "Ecology", "Biology", or "Environmental Science" as Main Categories. They are too broad to be useful.
+       - **Atomic Sub-Themes:** Avoid compound names like 'Temperature and Predation' unless the study explicitly tests the *interaction* between them. If a study is just about Temperature, put it in 'Temperature'.
+    4. **EXTRACT VARIABLES (Standardize Terms):**
+       - 'driver_variable': The primary Independent Variable/Stressor. Use standard terms (e.g., use "Precipitation" NOT "Rainfall"). Keep it simple (1-2 words).
+       - 'response_variable': The primary Dependent Variable/Outcome. Keep it simple (1-2 words).
+       - 'effect_direction': 'Positive' (Driver increases Response), 'Negative' (Driver decreases Response), 'Neutral' (No significant effect), 'Complex' (Context dependent), or 'Methodological' (Study validates a method/model, no biological effect direction).
+       - 'study_location': Country or Region. Normalize to English names (e.g. "USA" -> "United States").
+       ${enableSpecies ? "- 'study_species': Species name or group. DO NOT include counts/numbers (e.g., do NOT say '18 bird species', say 'Birds (General)' or 'Aves'). Use common name if available." : ""}
+    5. Generate 'key_finding', 'impact_keywords', and 'short_citation'.
+    
+    **CRITICAL RULE FOR MULTIPLE FINDINGS:**
+    - If a single paper contains **multiple distinct experiments** or investigates **distinct Driver-Response pairs** (e.g. Temperature -> Growth AND pH -> Survival), create **SEPARATE** entries in the 'papers' array for each pair.
+    - Each entry should share the same title/authors/citation but have specific drivers, responses, and key findings for that pair.
+    - Do NOT create duplicate entries if they are synonyms; only for distinct findings.
+
+    EXISTING TAXONOMY HINT: ${taxonomyHint}
+
+    OUTPUT (Strict JSON):
+    {
+      "papers": [
+        { 
+          "title": "...", "authors": "...", "year": "...", "journal": "...", "abstract_summary": "...", 
+          "main_category": "...", "sub_theme": "...", 
+          "driver_variable": "...", "response_variable": "...", "effect_direction": "...",
+          "study_location": "...", ${enableSpecies ? '"study_species": "...",' : ''}
+          "key_finding": "...", "impact_keywords": "...", "short_citation": "..." 
+        }
+      ]
+    }
+  `;
 
   let retries = 0;
   const maxRetries = 6; 
+
   while (true) {
     try {
       onStatusUpdate(`Extracting batch... (Attempt ${retries + 1}/${maxRetries})`);
       const data = await fetchAI(modelId, key, systemPrompt, `Process this raw data batch:\n${textBatch}`, true);
-      const parsed = safeJsonParse<AnalysisResult>(data.candidates?.[0]?.content?.parts?.[0]?.text);
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textResponse) throw new Error("No data returned from AI.");
+
+      const parsed = safeJsonParse<AnalysisResult>(textResponse);
       return { result: parsed.data, truncated: parsed.wasTruncated };
+
     } catch (error: any) {
-      if ((error.name === "RetryableError" || error.message.includes("Overloaded") || !error.name.includes("Quota")) && retries < maxRetries) {
+      const isRetryable = error.name === "RetryableError" || error.message.includes("Overloaded");
+      const isFatal = error.name === "QuotaExceededError" || error.name === "ApiKeyError";
+      
+      // If we failed JSON parsing, we might want to rethrow to trigger manual fix
+      if (error.message.includes("malformed data") || error.message.includes("JSON")) {
+          throw error; 
+      }
+      
+      if (isRetryable || (!isFatal && retries < maxRetries)) {
+        if (retries < maxRetries) {
           retries++;
           const delayTime = Math.pow(2, retries) * 1000 + (Math.random() * 1000); 
           onStatusUpdate(`⚠️ AI Busy/Overloaded. Retrying in ${Math.round(delayTime/1000)}s...`);
           await wait(delayTime);
           continue;
+        }
       }
       throw error; 
     }
   }
 }
 
-async function auditTaxonomyWithGemini(taxonomyList: string[], key: string, topic: string, modelId: string, onStatusUpdate: (msg: string) => void): Promise<AuditResult> {
-  const systemPrompt = `You are an expert taxonomy auditor for "${topic || "Research"}". Review "Main Category > Sub-Theme" pairs. Identify duplicates, hierarchies, synonyms. OUTPUT JSON: { "fixes": [{ "original_category": "...", "original_theme": "...", "new_category": "...", "new_theme": "...", "reason": "..." }] }`;
-  try {
+// RESTORED: Superior Audit Function for Automatic Finalization
+async function auditTaxonomyWithGemini(
+  taxonomyList: string[],
+  key: string,
+  topic: string,
+  modelId: string, // Dynamic model ID
+  onStatusUpdate: (msg: string) => void
+): Promise<AuditResult> {
+  const effectiveTopic = topic.trim() || "General Academic Research";
+
+  const systemPrompt = `
+    You are an expert taxonomy auditor for a systematic review on "${effectiveTopic}".
+    Your task is to review the current list of "Main Category > Sub-Theme" pairs and identify structural inconsistencies or redundancies.
+
+    SPECIFIC ISSUES TO DETECT AND FIX:
+    1. **Duplicate Sub-Themes across Categories:** If the exact same sub-theme name (e.g., "Phenology") appears under two different Main Categories (e.g., "Behavior" and "Physiology"), you MUST resolve this ambiguity.
+       - FIX: Rename one or both to be specific (e.g., "Behavioral Phenology", "Physiological Phenology") OR move them to the single most appropriate category.
+    2. **Hierarchical Redundancy:** If a Main Category is clearly a subset of another Main Category (e.g., "Heat Stress" is a main category, but "Physiological Responses" also exists), merge the specific one into the broader one.
+       - FIX: Demote the specific Main Category to a Sub-Theme under the broader Main Category.
+    3. **Merge Synonyms:** If "Demography" and "Population Dynamics" both exist, merge them into the more standard term.
+
+    INPUT FORMAT:
+    A list of strings: "Main Category ||| Sub-Theme"
+
+    OUTPUT INSTRUCTIONS:
+    - Return a JSON object with a "fixes" array.
+    - Each fix object must contain: "original_category", "original_theme", "new_category", "new_theme", "reason".
+    - If NO fixes are needed, return an empty "fixes" array.
+
+    CURRENT TAXONOMY LIST:
+    ${JSON.stringify(taxonomyList)}
+
+    OUTPUT SCHEMA (STRICT JSON):
+    {
+      "fixes": [
+        {
+          "original_category": "...",
+          "original_theme": "...",
+          "new_category": "...",
+          "new_theme": "...",
+          "reason": "..."
+        }
+      ]
+    }
+  `;
+
+  let retries = 0;
+  const maxRetries = 3;
+
+  while (true) {
+    try {
       onStatusUpdate(`Auditing Structure...`);
-      const data = await fetchAI(modelId, key, systemPrompt, `CURRENT TAXONOMY LIST:\n${JSON.stringify(taxonomyList)}`, true);
-      return safeJsonParse<AuditResult>(data.candidates?.[0]?.content?.parts?.[0]?.text).data;
-  } catch (error) { return { fixes: [] }; }
+      // Empty user prompt because the list is in the system prompt for better context adherence in Gemma
+      const data = await fetchAI(modelId, key, systemPrompt, "Analyze and fix the taxonomy list above.", true);
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const parsed = safeJsonParse<AuditResult>(textResponse);
+      return parsed.data;
+    } catch (error: any) {
+      if ((error.name === "RetryableError" || !error.name.includes("Quota")) && retries < maxRetries) {
+        retries++; await wait(3000); continue;
+      }
+      return { fixes: [] };
+    }
+  }
 }
 
-async function consolidateThemesWithGemini(taxonomy: Taxonomy, paperSamples: Record<string, string[]>, key: string, topic: string, modelId: string, rejectedSuggestions: string[], lockedItems: string[], onStatusUpdate: (msg: string) => void): Promise<ConsolidationResult> {
-  const systemPrompt = `You are an expert data synthesis analyst. Analyze structure for "${topic || "Research"}".
-    LOCKED ITEMS: ${lockedItems.join(', ')}
-    REJECTED: ${rejectedSuggestions.join('\n')}
-    TASKS: Merge Sub-Sections, Move Sub-Sections, Merge Main Sections, Resolve Ambiguous Names.
-    OUTPUT STRICT JSON: { "status": "...", "suggestions": [{ "main_category": "...", "suggested_merge": {...}, "suggested_move": {...}, "suggested_category_merge": {...}, "suggested_rename": {...} }] }`;
-  try {
+// NEW: Advanced Consolidation Logic for the Button
+async function consolidateThemesWithGemini(
+  taxonomy: Taxonomy, 
+  paperSamples: Record<string, string[]>,
+  key: string,
+  topic: string,
+  modelId: string,
+  rejectedSuggestions: string[],
+  lockedItems: string[],
+  onStatusUpdate: (msg: string) => void
+): Promise<ConsolidationResult> {
+  const effectiveTopic = topic.trim() || "General Academic Research";
+
+  const systemPrompt = `
+    You are an expert data synthesis analyst reviewing the Table of Contents for a Systematic Review Manuscript on "${effectiveTopic}".
+    Your task is to analyze the existing structure: Main Sections (Main Categories) and Sub-Sections (Sub-Themes).
+    
+    INPUT CONTEXT:
+    - You are provided with a 'Rich Taxonomy' where each Main Category contains a list of Sub-Themes, and each Sub-Theme has a list of 'sample_titles'.
+    - **USE THESE TITLES TO VERIFY CONTEXT.** If a theme name seems misplaced (e.g. "Population Dynamics" in "Community Ecology"), CHECK THE TITLES. 
+      - If titles describe community-level interactions, DO NOT move it.
+      - If titles describe single-species dynamics, DO move it.
+      - **CITATION REQUIRED:** In your 'reason' field, you MUST quote a specific word or phrase from one of the sample titles that justifies your decision.
+
+    LOCKED ITEMS (DO NOT TOUCH):
+    - The following sections are LOCKED by the user. Do NOT suggest renaming, moving, or merging them (unless moving something INTO them):
+    ${lockedItems.length > 0 ? lockedItems.join(', ') : "None"}
+
+    TASKS (In Order of Priority):
+    1. **Merge Sub-Sections (HIGHEST PRIORITY):** Identify any Sub-Sections within a Main Section that are conceptually overlapping and should be merged into a single, cohesive Sub-Section.
+    2. **Move Sub-Sections (CRITICAL):** Check if any Sub-Sections are misplaced. Suggest moving them to the correct Main Section.
+    3. **Merge Main Sections:** Identify synonymous or highly overlapping Main Sections (e.g., 'Physiology' and 'Physiological Responses') and merge them.
+    4. **Hierarchy Check:** Identify Main Sections that are actually subsets of other Main Sections (e.g. "Heat Stress" should be inside "Abiotic Stress") and suggest a move.
+    5. **Resolve Ambiguous Names:** If a Sub-Section is named "X and Y" (e.g. "Temperature and Predation"), check the 'sample_titles'. If the papers are only about "X", suggest renaming it to "X".
+    6. **Rename Main Sections (CRITICAL ONLY):** ONLY suggest a rename if the current name is 'General', 'Biology', 'Other', or clearly too broad/vague.
+    7. **No Self-Merges:** Do NOT suggest merging a sub-section into itself. A merge requires at least two distinct sub-sections.
+
+    RICH TAXONOMY (Structure + Content Samples): 
+    ${JSON.stringify({ taxonomy, paperSamples }, null, 2)}
+
+    PREVIOUSLY REJECTED SUGGESTIONS (DO NOT SUGGEST THESE AGAIN):
+    ${rejectedSuggestions.length > 0 ? rejectedSuggestions.join('\n') : "None"}
+
+    OUTPUT SCHEMA (STRICT JSON):
+    {
+      "status": "suggestions_made" | "no_changes", 
+      "suggestions": [
+        {
+          "main_category": "Current Main Section Name",
+          "suggested_merge": {
+            "themes_to_combine": ["Sub-Section A", "Sub-Section B"],
+            "new_theme_name": "Combined Sub-Section Header",
+            "reason": "Explanation citing specific title words."
+          } | null,
+          "suggested_move": {
+            "theme": "Sub-Section Name",
+            "current_category": "Current Main Section Name",
+            "target_category": "Target Main Section Name",
+            "reason": "Why it belongs there (cite title words)."
+          } | null,
+          "suggested_category_merge": {
+            "source_category": "Main Section to Remove",
+            "target_category": "Main Section to Merge Into",
+            "reason": "Why these major sections are duplicates."
+          } | null,
+          "suggested_rename": {
+             "current_name": "Current Main Section Name",
+             "new_name": "Better Main Section Name",
+             "reason": "Reason for rename."
+          } | null
+        }
+      ]
+    }
+  `;
+
+  let retries = 0;
+  const maxRetries = 3;
+
+  while (true) {
+    try {
       onStatusUpdate(`Analyzing manuscript structure...`);
-      const data = await fetchAI(modelId, key, systemPrompt, `RICH TAXONOMY:\n${JSON.stringify({ taxonomy, paperSamples }, null, 2)}`, true);
-      return safeJsonParse<ConsolidationResult>(data.candidates?.[0]?.content?.parts?.[0]?.text).data;
-  } catch (error) { return { status: "no_changes", suggestions: [] }; }
+      const data = await fetchAI(modelId, key, systemPrompt, "Review the provided structure for consolidation, moves, and critical improvements.", true);
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const parsed = safeJsonParse<ConsolidationResult>(textResponse);
+      return parsed.data;
+    } catch (error: any) {
+      if ((error.name === "RetryableError" || !error.name.includes("Quota")) && retries < maxRetries) {
+        retries++; await wait(3000); continue;
+      }
+      // Return "no changes" on error to avoid crashing
+      return { status: "no_changes", suggestions: [] };
+    }
+  }
 }
 
-async function optimizeStructureWithGemini(papers: Paper[], key: string, topic: string, modelId: string, _enableSpecies: boolean, onStatusUpdate: (msg: string) => void): Promise<OptimizationResult> {
-  const paperSummaries = papers.map(p => ({ id: p.id, title: p.title, current_cat: p.category, current_theme: p.theme, driver: p.driver, response: p.response }));
-  const systemPrompt = `You are an expert taxonomy architect for "${topic || "Research"}". Normalize metadata (synonyms) and organize categories. OUTPUT STRICT JSON: { "moves": [{ "paper_id": "...", "new_category": "...", "new_theme": "...", "new_driver": "...", "new_driver_group": "...", "new_response": "...", "new_response_group": "...", "new_location": "...", "new_species": "..." }] }`;
-  try {
-      onStatusUpdate(`Optimization: Analyzing papers...`);
-      const data = await fetchAI(modelId, key, systemPrompt, `PAPER LIST:\n${JSON.stringify(paperSummaries)}`, true);
-      return safeJsonParse<OptimizationResult>(data.candidates?.[0]?.content?.parts?.[0]?.text).data;
-  } catch (error) { return { moves: [] }; }
+async function optimizeStructureWithGemini(
+  papers: Paper[],
+  key: string,
+  topic: string,
+  modelId: string,
+  _enableSpecies: boolean, // unused variable prefix with _
+  onStatusUpdate: (msg: string) => void
+): Promise<OptimizationResult> {
+  const effectiveTopic = topic.trim() || "General Academic Research";
+  const paperSummaries = papers.map(p => ({
+    id: p.id,
+    title: p.title,
+    current_cat: p.category,
+    current_theme: p.theme,
+    driver: p.driver,
+    response: p.response,
+    location: p.location,
+    species: p.species
+  }));
+
+  const systemPrompt = `
+    You are an expert taxonomy architect for a systematic review on "${effectiveTopic}".
+    TASK: Reorganize categories and Normalize metadata (Synonyms & Groups).
+
+    RULES:
+    1. **Manuscript Structure:** Organize 'Main Categories' as Major Sections, 'Sub-Themes' as Subsections. Prioritize OUTCOME domains.
+    2. **Generalize Sub-Themes:** Merge sub-themes describing the same outcome but different drivers (e.g. "Fire-driven Predation" -> "Predation Rates").
+    3. **NORMALIZE METADATA (Apply Universally):**
+       - **Drivers:** Scan for ALL synonyms and standardize them to a single term. (e.g., "Rainfall"/"Precipitation" -> "Precipitation"; "Temp"/"Temperature" -> "Temperature"). Use this standardized term for 'new_driver'.
+       - **Responses:** Scan for ALL synonyms and standardize them to a single term. Use this standardized term for 'new_response'.
+       - **Locations:** Consolidate synonyms (e.g. "USA"/"United States" -> "United States"). Use this for 'new_location'.
+       - **Species:** Standardize names (e.g. "5 ducks" -> "Anatidae (Ducks)"). Use this for 'new_species'.
+    4. **GROUP METADATA (Hierarchical):**
+       - Assign 'new_driver_group' (e.g. "Precipitation" -> "Climate", "Predation" -> "Biotic").
+       - Assign 'new_response_group' (e.g. "Hatching Success" -> "Demography", "Water Use Efficiency" -> "Physiology").
+    5. **Titles:** If any title contains a bracketed translation [like this], remove the bracketed part and keep the English.
+    
+    OUTPUT SCHEMA (Strict JSON):
+    { 
+      "moves": [ 
+        { 
+          "paper_id": "...", 
+          "new_category": "...", 
+          "new_theme": "...", 
+          "new_driver": "...", 
+          "new_driver_group": "...", 
+          "new_response": "...", 
+          "new_response_group": "...", 
+          "new_location": "...", 
+          "new_species": "..." 
+        } 
+      ] 
+    }
+  `;
+
+  const userPrompt = `PAPER LIST:\n${JSON.stringify(paperSummaries)}`;
+  let retries = 0; const maxRetries = 3;
+
+  while (true) {
+    try {
+      onStatusUpdate(`Optimization: Analyzing ${papers.length} papers for structure & metadata...`);
+      const data = await fetchAI(modelId, key, systemPrompt, userPrompt, true);
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      const parsed = safeJsonParse<OptimizationResult>(textResponse);
+      return parsed.data; 
+    } catch (error: any) {
+      if ((error.name === "RetryableError" || !error.name.includes("Quota")) && retries < maxRetries) {
+        retries++; await wait(3000 * retries); continue;
+      }
+      return { moves: [] }; 
+    }
+  }
 }
 
 const cleanSynthesisResponse = (raw: any, modelId: string): SynthesisResult => {
@@ -503,17 +792,42 @@ const cleanSynthesisResponse = (raw: any, modelId: string): SynthesisResult => {
 };
 
 async function synthesizeSectionWithGemini(sectionTheme: string, papersData: any[], key: string, topic: string, modelId: string, onStatusUpdate: (msg: string) => void): Promise<SynthesisResult> {
+  const effectiveTopic = topic.trim() || "Academic Research";
   const synthesisDataString = papersData.map(p => `Key Finding: "${p.keyFinding}". Keywords: [${p.impactKeywords}]. Citation: ${p.shortCitation}`).join('\n---\n');
-  const systemPrompt = `You are an expert academic synthesizer performing a Systematic Review on "${topic || "Research"}". Section: "${sectionTheme}".
-    TASK 1: COMPREHENSIVE SYNTHESIS (summary). Bullet points covering every distinct finding. Combine citations.
-    TASK 2: EXHAUSTIVE CONSISTENCY CHECK (contradictionAnalysis). Report disagreements.
-    OUTPUT JSON: { "summary": ["Bullet 1...", "Bullet 2..."], "contradictionAnalysis": "..." }`;
+  const systemPrompt = `
+    You are an expert academic synthesizer performing a Systematic Review.
+    TOPIC: "${effectiveTopic}"
+    SECTION: "${sectionTheme}"
+    
+    DATA: A list of key findings from individual papers is provided below.
+    
+    TASK 1: COMPREHENSIVE SYNTHESIS (summary)
+    - **Goal:** Representative Coverage. Generate as many bullet points as necessary to cover **every distinct finding** in the dataset.
+    - **NO LIMITS:** There is NO maximum number of bullet points. Do not limit yourself to the "top 3-5" findings. If there are 20 distinct findings, produce 20 bullet points.
+    - **Citation Clustering:** If multiple papers support the same finding, combine them into a single bullet point and list **ALL** of them. 
+      - Format: "Finding text (Smith 2020; Jones 2021; Doe 2022)."
+      - **Relevance Filter:** While comprehensive coverage is desired, you are NOT required to cite every single paper if some lack meaningful or relevant findings. Prioritize quality and distinctness over 100% inclusion.
+    
+    TASK 2: EXHAUSTIVE CONSISTENCY CHECK (contradictionAnalysis)
+    - Perform a rigorous check for disagreements.
+    - Report **EVERY** distinct instance of disagreement or divergence found in the dataset. 
+    - Do not just write a general note; specify which papers conflict and how (e.g., "Paper A and B found positive effects, whereas Paper C found negative effects").
+    - If absolutely no contradictions exist, state "No clear contradictions found; findings are generally consistent."
+    
+    OUTPUT JSON FORMAT (Strict):
+    { 
+      "summary": ["Bullet 1...", "Bullet 2..."], 
+      "contradictionAnalysis": "Detailed paragraph(s) analyzing all conflicts..." 
+    }
+  `;
   
   let retries = 0; const maxRetries = 5;
   while (true) {
     try {
       const data = await fetchAI(modelId, key, systemPrompt, `DATA:\n${synthesisDataString}`, true);
-      return cleanSynthesisResponse(safeJsonParse<any>(data.candidates?.[0]?.content?.parts?.[0]?.text).data, modelId);
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const raw = safeJsonParse<any>(textResponse);
+      return cleanSynthesisResponse(raw.data, modelId);
     } catch (error: any) {
       if ((error.name === "RetryableError" || !error.name.includes("Quota")) && retries < maxRetries) { retries++; await wait(Math.pow(2, retries) * 1000); onStatusUpdate("Busy..."); continue; }
       throw error;
@@ -522,102 +836,164 @@ async function synthesizeSectionWithGemini(sectionTheme: string, papersData: any
 }
 
 async function askPaperChat(query: string, papers: Paper[], key: string, modelId: string): Promise<string> {
-  const stopWords = new Set(['about', 'this', 'that', 'with', 'from', 'what', 'where', 'when', 'which', 'who', 'how']);
-  const keywords = query.toLowerCase().replace(/[.,?/#!$%^&*;:{}=\-_`~()]/g, "").split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
-  const relevantPapers = papers.filter(p => keywords.some(k => (p.title + " " + p.keyFinding + " " + p.abstractSnippet).toLowerCase().includes(k))).slice(0, 15);
-  const context = relevantPapers.map(p => `- [${p.shortCitation}]: ${p.title}. Found: ${p.keyFinding}.`).join('\n');
-  const systemPrompt = `You are EcoSynthesisAI's Chat Assistant. Summarize findings based on provided context. CITATIONS: Use [Author, Year].`;
+  // Enhanced Keyword Extraction (excluding common stop words)
+  const stopWords = new Set(['about', 'this', 'that', 'with', 'from', 'what', 'where', 'when', 'which', 'who', 'how', 'does', 'need', 'want', 'know', 'find', 'show', 'tell', 'papers', 'study', 'studies']);
+  const keywords = query.toLowerCase()
+    .replace(/[.,?/#!$%^&*;:{}=\-_`~()]/g, "")
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopWords.has(w));
+  
+  // 1. Calculate Global Context
+  const totalPapers = papers.length;
+  const categories = Array.from(new Set(papers.map(p => p.category))).sort();
+  const drivers: Record<string, number> = {};
+  const responses: Record<string, number> = {};
+  const locations: Record<string, number> = {};
+  const species: Record<string, number> = {};
+  
+  papers.forEach(p => {
+    drivers[p.driver] = (drivers[p.driver] || 0) + 1;
+    responses[p.response] = (responses[p.response] || 0) + 1;
+    locations[p.location] = (locations[p.location] || 0) + 1;
+    species[p.species] = (species[p.species] || 0) + 1;
+  });
+  
+  const topDrivers = Object.entries(drivers).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
+  const topResponses = Object.entries(responses).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
+  const topLocations = Object.entries(locations).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
+  const topSpecies = Object.entries(species).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
+
+  // 2. RAG Context (Relevance Search with improved keyword logic)
+  const relevantPapers = papers.filter(p => {
+      if (keywords.length === 0) return false;
+      const text = (p.title + " " + p.keyFinding + " " + p.abstractSnippet + " " + p.species + " " + p.location).toLowerCase();
+      // Require at least one non-stopword keyword match
+      return keywords.some(k => text.includes(k));
+  }).slice(0, 15);
+  
+  const context = relevantPapers.map(p => `- [${p.shortCitation}]: ${p.title}. Found: ${p.keyFinding}. (D: ${p.driver}, R: ${p.response}, Loc: ${p.location}, Sp: ${p.species})`).join('\n');
+
+  const systemPrompt = `
+    You are EcoSynthesisAI's Chat Assistant. You have access to a database of ${totalPapers} papers.
+    
+    DATA CONTEXT (Demographics & Topics):
+    - Main Categories: ${categories.join(', ')}
+    - Top Drivers: ${topDrivers}
+    - Top Outcomes: ${topResponses}
+    - Top Locations: ${topLocations}
+    - Top Species/Taxa: ${topSpecies}
+
+    CAPABILITIES & LIMITATIONS:
+    1. SUMMARIZATION ONLY: You may summarize findings, list citations, and count papers (e.g. "How many papers mention temp?").
+    2. NO STATISTICS: Do NOT perform statistical analyses (meta-analysis, regression, effect sizes, etc.). If asked, reply: "I'm sorry, I have been coded/instructed to only summarize information because this tool is a qualitative review assistant, not a quantitative meta-analysis tool."
+    3. NO DEEP SYNTHESIS: If asked to compare conclusions in detail or synthesize contradictions (e.g. "Do these papers agree on X?"), reply: "For synthesis and contradiction analysis, please use the ✨ Sparkle buttons in the list view."
+    4. CITATIONS: Always use [Author, Year] format. You may expand on these citations in more detail, such as titles or journals, if requested.
+    5. VAGUE QUERIES: If the 'Relevant Papers Found' list is empty or doesn't seem to answer the user's specific question, politely suggest that their query might be too vague or that the database doesn't contain that specific information.
+  `;
+  
+  const userPrompt = `Relevant Papers Found (based on keywords: ${keywords.join(', ')}):\n${context || "No specific matches found."}\n\nUser Question: ${query}`;
+  
   try {
-    const data = await fetchAI(modelId, key, systemPrompt, `Papers:\n${context || "No specific matches."}\n\nQuestion: ${query}`, false);
+    const data = await fetchAI(modelId, key, systemPrompt, userPrompt, false);
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
   } catch (err: any) { return `Error: ${err.message}`; }
 }
 
 // --- SUB-COMPONENTS ---
-
-// UPDATED: Synthesis Modal (Supports Bulk + Download)
-const SynthesisModal: React.FC<SynthesisModalProps> = ({ isOpen, onClose, themeKey, isSynthesizing, retryStatus, result, bulkData }) => {
+const SynthesisModal: React.FC<SynthesisModalProps> = ({ isOpen, onClose, themeKey, isSynthesizing, retryStatus, result }) => {
   if (!isOpen) return null;
+  const [category, theme] = themeKey.split('-');
+  const analysisText = result?.contradictionAnalysis || "";
+  const summaryContent = result?.summary || "No summary available.";
+  const hasContradictions = analysisText.toLowerCase && !analysisText.toLowerCase().includes('no clear contradictions');
+  return (
+    <div className="fixed inset-0 bg-slate-900 bg-opacity-70 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl transform transition-all duration-300 scale-100 opacity-100 flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-200 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-bold text-blue-700 flex items-center gap-2"><Zap className='h-6 w-6 text-yellow-500' /> Synthesis & Contradiction Analysis</h3>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"><X className='h-5 w-5' /></button>
+        </div>
+        <div className="p-6 overflow-y-auto">
+          <p className='text-sm text-slate-600 mb-4'><span className='font-bold text-slate-700'>Section:</span> {category} {theme ? `/ ${theme}` : '(Main Category Summary)'}</p>
+          {isSynthesizing ? (<div className="flex flex-col items-center justify-center h-40 bg-slate-50 rounded-lg p-4"><Loader2 className="h-8 w-8 text-blue-500 animate-spin" /><p className='mt-3 text-sm text-blue-600 font-medium'>Generating summary points...</p>{retryStatus && <p className="text-xs text-amber-600 mt-1">{retryStatus}</p>}</div>) : result && (<div className='space-y-6'><div className="bg-blue-50 p-4 rounded-lg border border-blue-200"><h4 className='font-bold text-lg text-blue-800 mb-2'>1. Summary Points & Citations</h4><div className='text-slate-800 leading-relaxed whitespace-pre-wrap'>{Array.isArray(summaryContent) ? (<ul className="list-disc pl-5 space-y-2">{summaryContent.map((line, idx) => (<li key={idx} className="pl-1">{typeof line === 'string' ? line : JSON.stringify(line)}</li>))}</ul>) : String(summaryContent)}</div>{result.modelUsed && (<div className="mt-4 pt-2 border-t border-blue-200 text-xs text-blue-400 flex items-center gap-1"><Cpu className="h-3 w-3" /> Generated with: {result.modelUsed}</div>)}</div><div className={`p-4 rounded-lg border ${!hasContradictions ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}><h4 className={`font-bold text-lg mb-2 flex items-center gap-2 ${!hasContradictions ? 'text-green-800' : 'text-red-800'}`}>{!hasContradictions ? <Check className='h-5 w-5' /> : <AlertCircle className='h-5 w-5' />} 2. Contradiction Analysis</h4><p className='text-slate-800 leading-relaxed'>{String(analysisText)}</p></div></div>)}</div>
+      </div>
+    </div>
+  );
+};
 
-  const isBulk = !!(bulkData && bulkData.length > 0);
-  const title = isBulk ? "Full Synthesis Report" : "Synthesis & Contradiction Analysis";
+// NEW: Bulk Synthesis Modal (Pop-up before export)
+interface BulkSynthesisModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  results: any[] | null;
+  type: 'sub' | 'main';
+}
 
-  const handleDownload = () => {
-    let htmlContent = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Synthesis Report</title><style>body{font-family:sans-serif;margin:40px;line-height:1.6} h1{color:#047857} h2{color:#1e40af;margin-top:30px} h3{color:#334155} .box{border:1px solid #e2e8f0; padding:15px; border-radius:8px; margin-bottom:20px} .contradiction{background:#fef2f2; border-color:#fca5a5; color:#7f1d1d} .summary{background:#eff6ff; border-color:#bfdbfe; color:#1e3a8a}</style></head><body><h1>${title}</h1>`;
+const BulkSynthesisModal: React.FC<BulkSynthesisModalProps> = ({ isOpen, onClose, results, type }) => {
+  if (!isOpen || !results) return null;
+
+  const handleExport = () => {
+    let htmlContent = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${type === 'sub' ? 'Sub-Theme' : 'Main Category'} Synthesis</title><style>body{font-family:sans-serif;margin:40px} h1{color:#047857} .contradiction{background:#fef2f2;padding:10px;border:1px solid #fca5a5}</style></head><body><h1>${type === 'sub' ? 'Sub-Theme' : 'Main Category'} Synthesis</h1>`;
     
-    const sectionsToRender = isBulk ? bulkData : [{ category: themeKey, result: result }];
-
-    sectionsToRender?.forEach((item: any) => {
-        const r = item.result;
-        if (!r) return;
-        const name = item.theme ? `${item.category} - ${item.theme}` : item.category;
-        const sum = Array.isArray(r.summary) ? r.summary : [r.summary]; 
-        
-        htmlContent += `<h2>${name}</h2>`;
-        htmlContent += `<div class="box summary"><h3>Summary</h3><ul>${sum.map((l: string) => `<li>${l}</li>`).join('')}</ul></div>`;
-        htmlContent += `<div class="box contradiction"><h3>Contradictions</h3><p>${r.contradictionAnalysis}</p></div>`;
-        htmlContent += `<hr/>`;
+    results.forEach(s => {
+       const sum = Array.isArray(s.result.summary) ? s.result.summary : [s.result.summary];
+       if (type === 'sub') {
+           htmlContent += `<h2>${s.category}</h2><h3>${s.theme}</h3><ul>${sum.map((l:string)=>`<li>${l}</li>`).join('')}</ul><div class="contradiction"><strong>Contradictions:</strong> ${s.result.contradictionAnalysis}</div>`;
+       } else {
+           htmlContent += `<h2>${s.category}</h2><ul>${sum.map((l:string)=>`<li>${l}</li>`).join('')}</ul><div class="contradiction"><strong>Contradictions:</strong> ${s.result.contradictionAnalysis}</div><hr/>`;
+       }
     });
 
     htmlContent += '</body></html>';
+    
     const blob = new Blob([htmlContent], { type: 'text/html' });
-    const link = document.createElement("a"); 
-    link.href = URL.createObjectURL(blob); 
-    link.download = `synthesis_${isBulk ? 'bulk' : themeKey.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.html`; 
-    document.body.appendChild(link); link.click(); setTimeout(() => document.body.removeChild(link), 100);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `synthesis_${type}.html`;
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => document.body.removeChild(link), 100);
   };
 
   return (
     <div className="fixed inset-0 bg-slate-900 bg-opacity-70 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl transform transition-all duration-300 flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b border-slate-200 flex justify-between items-center shrink-0 bg-slate-50 rounded-t-xl">
-          <h3 className="text-xl font-bold text-blue-700 flex items-center gap-2"><Zap className='h-6 w-6 text-yellow-500' /> {title}</h3>
-          <div className="flex gap-2">
-             {!isSynthesizing && (result || isBulk) && (
-                 <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 font-bold text-xs transition-colors"><Download className="h-4 w-4"/> Download Report</button>
-             )}
-             <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200 transition-colors"><X className='h-5 w-5' /></button>
-          </div>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl transform transition-all duration-300 scale-100 opacity-100 flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-200 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-bold text-emerald-700 flex items-center gap-2">
+            <Zap className='h-6 w-6 text-yellow-500' /> 
+            {type === 'sub' ? 'Synthesized Sub-Themes' : 'Synthesized Main Categories'}
+          </h3>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors"><X className='h-5 w-5' /></button>
         </div>
-        
-        <div className="p-6 overflow-y-auto">
-          {isSynthesizing ? (
-              <div className="flex flex-col items-center justify-center h-60">
-                  <Loader2 className="h-10 w-10 text-blue-500 animate-spin" />
-                  <p className='mt-4 text-lg text-blue-600 font-medium'>Generating synthesis...</p>
-                  {retryStatus && <p className="text-sm text-amber-600 mt-2 bg-amber-50 px-3 py-1 rounded">{retryStatus}</p>}
-              </div>
-          ) : (
-            <div className="space-y-8">
-                {(isBulk ? bulkData : [{ category: themeKey, result }]).map((item: any, idx: number) => {
-                    if (!item || !item.result) return null;
-                    const r = item.result;
-                    const header = item.theme ? `${item.category} / ${item.theme}` : item.category;
-                    const hasContradictions = r.contradictionAnalysis && !r.contradictionAnalysis.toLowerCase().includes('no clear contradictions');
+        <div className="p-6 overflow-y-auto space-y-6">
+            {results.map((item, idx) => (
+                <div key={idx} className="border-b border-slate-100 pb-6 last:border-0">
+                    <h4 className="text-lg font-bold text-slate-800">{item.category} {type === 'sub' && <span className="text-slate-500 font-normal">/ {item.theme}</span>}</h4>
                     
-                    return (
-                        <div key={idx} className={isBulk ? "border-b border-slate-300 pb-8 last:border-0" : ""}>
-                            {isBulk && <h2 className="text-xl font-bold text-slate-800 mb-4 bg-slate-100 p-2 rounded">{header}</h2>}
-                            {!isBulk && <p className='text-sm text-slate-600 mb-4'><span className='font-bold text-slate-700'>Section:</span> {header}</p>}
-
-                            <div className="space-y-4">
-                                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                                    <h4 className='font-bold text-sm text-blue-800 mb-2 uppercase tracking-wide'>Summary Points</h4>
-                                    <div className='text-slate-800 leading-relaxed text-sm'>
-                                        {Array.isArray(r.summary) ? <ul className="list-disc pl-5 space-y-2">{r.summary.map((l: string, i: number) => <li key={i}>{l}</li>)}</ul> : r.summary}
-                                    </div>
-                                    {r.modelUsed && <div className="mt-4 pt-2 border-t border-blue-200 text-[10px] text-blue-400 flex items-center gap-1"><Cpu className="h-3 w-3" /> Generated with: {r.modelUsed}</div>}
-                                </div>
-                                <div className={`p-4 rounded-lg border ${!hasContradictions ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-                                    <h4 className={`font-bold text-sm mb-2 flex items-center gap-2 uppercase tracking-wide ${!hasContradictions ? 'text-green-800' : 'text-red-800'}`}>{!hasContradictions ? <Check className='h-4 w-4' /> : <AlertCircle className='h-4 w-4' />} Contradiction Analysis</h4>
-                                    <p className='text-slate-800 leading-relaxed text-sm'>{r.contradictionAnalysis}</p>
-                                </div>
+                    <div className="mt-2 bg-blue-50 p-3 rounded text-sm text-slate-800">
+                        <ul className="list-disc pl-5 space-y-1">
+                            {(Array.isArray(item.result.summary) ? item.result.summary : [item.result.summary]).map((line: string, i: number) => (
+                                <li key={i}>{line}</li>
+                            ))}
+                        </ul>
+                    </div>
+                    
+                    {item.result.contradictionAnalysis && !item.result.contradictionAnalysis.toLowerCase().includes("no clear contradictions") && (
+                        <div className="mt-2 bg-red-50 p-3 rounded text-sm text-red-800 border border-red-100 flex gap-2">
+                            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                            <div>
+                                <span className="font-bold">Contradictions:</span> {item.result.contradictionAnalysis}
                             </div>
                         </div>
-                    );
-                })}
-            </div>
-          )}
+                    )}
+                </div>
+            ))}
+        </div>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2 rounded-b-xl">
+            <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded font-medium">Close</button>
+            <button onClick={handleExport} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 font-bold flex items-center gap-2">
+                <Download className="h-4 w-4" /> Export HTML
+            </button>
         </div>
       </div>
     </div>
@@ -635,12 +1011,18 @@ const ManualFixModal = ({ isOpen, text, onSave, onCancel }: { isOpen: boolean, t
         <div className="flex justify-between items-start mb-4">
             <div>
                 <h2 className="text-xl font-bold text-amber-600 flex items-center gap-2"><Wrench className="h-6 w-6"/> Data Repair Required</h2>
-                <p className="text-slate-600 text-sm mt-1">The AI couldn't parse this batch. Please edit the text to fix obvious errors, then click "Retry Batch".</p>
+                <p className="text-slate-600 text-sm mt-1">The AI couldn't parse this batch, likely due to encoding errors (Mojibake) or garbled text in the citations below. Please edit the text to fix obvious errors, then click "Retry Batch".</p>
             </div>
             <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex-1 border border-slate-300 rounded overflow-hidden relative">
-            <textarea className="w-full h-full p-4 font-mono text-xs bg-slate-50 text-slate-700 resize-none outline-none" value={fixedText} onChange={(e) => setFixedText(e.target.value)} spellCheck={false}/>
+            <div className="absolute top-0 right-0 bg-slate-100 px-2 py-1 text-[10px] text-slate-500 font-bold border-b border-l rounded-bl font-mono">RAW INPUT</div>
+            <textarea 
+               className="w-full h-full p-4 font-mono text-xs bg-slate-50 text-slate-700 resize-none focus:ring-0 outline-none" 
+               value={fixedText} 
+               onChange={(e) => setFixedText(e.target.value)} 
+               spellCheck={false}
+            />
         </div>
         <div className="flex gap-3 justify-end mt-4">
           <button onClick={onCancel} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded">Stop Extraction</button>
@@ -676,6 +1058,7 @@ interface FlowDiagramProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
+  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
@@ -692,6 +1075,7 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
   const data = useMemo(() => {
     const drivers: Record<string, number> = {}; const responses: Record<string, number> = {}; const links: Record<string, { count: number, papers: Paper[], effectCounts: Record<string, number> }> = {};
     papers.forEach(p => {
+      // Use Group fields if the toggle is active, otherwise use raw fields.
       const d = isDriverGrouped ? (p.driverGroup || p.driver || "Unknown") : (p.driver || "Unknown");
       const r = isResponseGrouped ? (p.responseGroup || p.response || "Unknown") : (p.response || "Unknown");
       if (driverFilter && !d.toLowerCase().includes(driverFilter.toLowerCase())) return;
@@ -734,16 +1118,35 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
       <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-white rounded-t-lg flex-wrap gap-2">
         <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><ZoomIn className="h-4 w-4 text-slate-600"/></button><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
         <div className="flex items-center gap-2">
+           {/* GROUP TERMS BUTTON (LOCAL) */}
             <button 
               onClick={handleOptimizeTerms}
               disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
               title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${papers.length === 0 || isConsolidating || !apiKey ? 'text-slate-400 border-slate-100 cursor-not-allowed' : isTermsNormalized ? 'text-green-700 border-green-200 bg-green-50' : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'}`}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                ${papers.length === 0 || isConsolidating || !apiKey
+                  ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                  : isTermsNormalized 
+                    ? 'text-green-700 border-green-200 bg-green-50'
+                    : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                  }`}
             >
-              {isConsolidating ? <Loader2 className="h-3 w-3 animate-spin" /> : isTermsNormalized ? <Check className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
-              {isConsolidating ? 'Normalizing...' : isTermsNormalized ? 'Terms Grouped' : 'Group Terms'}
+              {isConsolidating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : isTermsNormalized ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Wrench className="h-3 w-3" />
+              )}
+              {isConsolidating 
+                ? 'Normalizing...' 
+                : isTermsNormalized
+                  ? 'Terms Grouped'
+                  : 'Group Terms'}
             </button>
+            {/* DRIVER GROUP TOGGLE (New) */}
            <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+           {/* RESPONSE GROUP TOGGLE (New) */}
            <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
           <div className="flex items-center bg-white border border-slate-300 rounded px-2 py-1 gap-2"><Search className="h-3 w-3 text-slate-400" /><input type="text" placeholder="Filter Drivers..." className="text-xs outline-none w-24" value={driverFilter} onChange={e => setDriverFilter(e.target.value)} /><div className="w-px h-3 bg-slate-300"></div><input type="text" placeholder="Filter Outcomes..." className="text-xs outline-none w-24" value={responseFilter} onChange={e => setResponseFilter(e.target.value)} /></div>
@@ -773,6 +1176,7 @@ interface TemporalChartProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
+  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
@@ -789,6 +1193,7 @@ const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, 
     const minYear = years[0]; const maxYear = years[years.length - 1];
     const counts: Record<string, number> = {};
     papers.forEach(p => { 
+        // Use Grouped terms if the respective toggle is active
         const d = isDriverGrouped ? (p.driverGroup || p.driver) : p.driver;
         const r = isResponseGrouped ? (p.responseGroup || p.response) : p.response;
         const val = metric === 'driver' ? d : r; 
@@ -823,16 +1228,35 @@ const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, 
         <div className="flex justify-between items-center mb-4 border-b border-slate-200 pb-3">
             <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="h-4 w-4"/> Trends Over Time</h3>
             <div className="flex items-center gap-3">
+                {/* GROUP TERMS BUTTON (LOCAL) */}
                 <button 
                   onClick={handleOptimizeTerms}
                   disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
                   title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${papers.length === 0 || isConsolidating || !apiKey ? 'text-slate-400 border-slate-100 cursor-not-allowed' : isTermsNormalized ? 'text-green-700 border-green-200 bg-green-50' : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'}`}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                    ${papers.length === 0 || isConsolidating || !apiKey
+                      ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                      : isTermsNormalized 
+                        ? 'text-green-700 border-green-200 bg-green-50'
+                        : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                      }`}
                 >
-                  {isConsolidating ? <Loader2 className="h-3 w-3 animate-spin" /> : isTermsNormalized ? <Check className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
-                  {isConsolidating ? 'Normalizing...' : isTermsNormalized ? 'Terms Grouped' : 'Group Terms'}
+                  {isConsolidating ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : isTermsNormalized ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <Wrench className="h-3 w-3" />
+                  )}
+                  {isConsolidating 
+                    ? 'Normalizing...' 
+                    : isTermsNormalized
+                      ? 'Terms Grouped'
+                      : 'Group Terms'}
                 </button>
+                 {/* DRIVER GROUP TOGGLE (New) */}
                  <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+                 {/* RESPONSE GROUP TOGGLE (New) */}
                  <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
                  <div className="flex bg-white rounded border border-slate-300 overflow-hidden">
@@ -873,20 +1297,21 @@ interface GapHeatmapProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
+  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
 }
 
-// --- COMPONENT: Gap Heatmap (Updated) ---
+// --- COMPONENT: Gap Heatmap ---
 const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const data = useMemo(() => {
+    // Use Grouped terms if the respective toggle is active
     const drivers = Array.from(new Set(papers.map(p => isDriverGrouped ? (p.driverGroup || p.driver) : p.driver))).sort();
     const responses = Array.from(new Set(papers.map(p => isResponseGrouped ? (p.responseGroup || p.response) : p.response))).sort();
     
-    const topDrivers = drivers.slice(0, 15); 
-    const topResponses = responses.slice(0, 15);
+    const topDrivers = drivers.slice(0, 15); const topResponses = responses.slice(0, 15);
     const matrix: Record<string, Record<string, number>> = {};
     topDrivers.forEach(d => { matrix[d] = {}; topResponses.forEach(r => matrix[d][r] = 0); });
     papers.forEach(p => { 
@@ -897,12 +1322,7 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
     return { topDrivers, topResponses, matrix };
   }, [papers, isDriverGrouped, isResponseGrouped]);
 
-  // Layout Config
-  const cellSize = 40; // Increased
-  const fontSize = 12; // Increased
-  const xLabelHeight = 180; // Increased for labels
-  const yLabelWidth = 200; // Increased for wrapping
-  
+  const cellSize = 30; const xLabelHeight = 120; const yLabelWidth = 140;
   const width = yLabelWidth + (data.topResponses.length * cellSize) + 20;
   const height = xLabelHeight + (data.topDrivers.length * cellSize) + 20;
 
@@ -914,17 +1334,36 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-bold text-slate-700 flex items-center gap-2"><Grid3X3 className="h-4 w-4"/> Research Gap Heatmap</h3>
         <div className="flex gap-2">
+            {/* GROUP TERMS BUTTON (LOCAL) */}
             <button 
               onClick={handleOptimizeTerms}
               disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
-              title={!apiKey ? "API Key required." : isTermsNormalized ? "Terms Grouped" : "Group Synonyms"}
-              className={`flex items-center gap-2 px-3 py-1.5 border rounded text-xs font-bold transition-colors ${papers.length === 0 || isConsolidating || !apiKey ? 'text-slate-400 border-slate-100' : isTermsNormalized ? 'text-green-700 border-green-200 bg-green-50' : 'text-purple-700 border-purple-200 bg-purple-50'}`}
+              title={!apiKey ? "API Key required to group terms." : papers.length === 0 ? "Add papers first." : isTermsNormalized ? "Terms are already grouped." : "Run AI analysis to group synonymous driver/response terms."}
+              className={`flex items-center gap-2 px-3 py-1.5 border rounded text-xs font-bold transition-colors
+                ${papers.length === 0 || isConsolidating || !apiKey
+                  ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                  : isTermsNormalized 
+                    ? 'text-green-700 border-green-200 bg-green-50'
+                    : 'text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100'
+                  }`}
             >
-              {isConsolidating ? <Loader2 className="h-3 w-3 animate-spin" /> : isTermsNormalized ? <Check className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
-              {isConsolidating ? 'Normalizing...' : isTermsNormalized ? 'Terms Grouped' : 'Group Terms'}
+              {isConsolidating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : isTermsNormalized ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Wrench className="h-3 w-3" />
+              )}
+              {isConsolidating 
+                ? 'Normalizing...' 
+                : isTermsNormalized
+                  ? 'Terms Grouped'
+                  : 'Group Terms'}
             </button>
-            <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500'}`}>{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
-            <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500'}`}>{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
+            {/* DRIVER GROUP TOGGLE (New) */}
+            <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
+            {/* RESPONSE GROUP TOGGLE (New) */}
+            <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
             <button onClick={handleExportDataCSV} className="text-xs flex items-center gap-1 text-slate-600 hover:text-emerald-600 font-medium cursor-pointer"><Download className="h-3 w-3"/> Data</button>
             <button onClick={handleExportPNG} className="text-xs flex items-center gap-1 text-slate-600 hover:text-blue-600 font-medium cursor-pointer"><ImageIcon className="h-3 w-3"/> Image</button>
@@ -932,39 +1371,17 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
       </div>
       <div className="flex-1 overflow-auto">
         <svg ref={svgRef} width={width} height={height} className="mx-auto bg-white shadow-sm rounded">
-          <style>{`text { font-family: sans-serif; font-size: ${fontSize}px; }`}</style>
-          
-          {/* X Axis - Rotated */}
-          {data.topResponses.map((r, i) => (
-             <text key={`x-${i}`} x={yLabelWidth + i * cellSize + cellSize/2} y={xLabelHeight - 10} transform={`rotate(-90, ${yLabelWidth + i * cellSize + cellSize/2}, ${xLabelHeight - 10})`} textAnchor="start" fill="#475569">
-                 {r}
-             </text>
-          ))}
-
-          {/* Y Axis - Wrapped */}
-          {data.topDrivers.map((d, i) => (
-             <WrappedText key={`y-${i}`} x={yLabelWidth - 10} y={xLabelHeight + i * cellSize + cellSize/2 - 4} text={d} width={yLabelWidth - 20} fontSize={fontSize} align="end" />
-          ))}
-
-          {/* Grid */}
-          {data.topDrivers.map((d, rowIdx) => data.topResponses.map((r, colIdx) => { 
-             const count = data.matrix[d][r]; 
-             const opacity = Math.min(1, count / 5); 
-             const fill = count === 0 ? '#f8fafc' : `rgba(16, 185, 129, ${opacity})`; 
-             return ( 
-               <g key={`${d}-${r}`}>
-                 <rect x={yLabelWidth + colIdx * cellSize} y={xLabelHeight + rowIdx * cellSize} width={cellSize} height={cellSize} fill={fill} stroke="#e2e8f0" />
-                 {count > 0 && <text x={yLabelWidth + colIdx * cellSize + cellSize/2} y={xLabelHeight + rowIdx * cellSize + cellSize/2 + 4} textAnchor="middle" fill={opacity > 0.6 ? 'white' : '#1e293b'} fontWeight="bold">{count}</text>}
-               </g> 
-             ); 
-          }))}
+          <style>{`text { font-family: sans-serif; font-size: 12px; }`}</style>
+          {data.topResponses.map((r, i) => ( <text key={`x-${i}`} x={yLabelWidth + i * cellSize + cellSize/2} y={xLabelHeight - 10} transform={`rotate(-90, ${yLabelWidth + i * cellSize + cellSize/2}, ${xLabelHeight - 10})`} textAnchor="start" fill="#475569">{r.substring(0, 20)}</text> ))}
+          {data.topDrivers.map((d, i) => ( <text key={`y-${i}`} x={yLabelWidth - 10} y={xLabelHeight + i * cellSize + cellSize/2 + 3} textAnchor="end" fill="#475569">{d.substring(0, 25)}</text> ))}
+          {data.topDrivers.map((d, rowIdx) => data.topResponses.map((r, colIdx) => { const count = data.matrix[d][r]; const opacity = Math.min(1, count / 5); const fill = count === 0 ? '#f8fafc' : `rgba(16, 185, 129, ${opacity})`; return ( <g key={`${d}-${r}`}><rect x={yLabelWidth + colIdx * cellSize} y={xLabelHeight + rowIdx * cellSize} width={cellSize} height={cellSize} fill={fill} stroke="#e2e8f0" />{count > 0 && <text x={yLabelWidth + colIdx * cellSize + cellSize/2} y={xLabelHeight + rowIdx * cellSize + cellSize/2 + 3} textAnchor="middle" fill={opacity > 0.6 ? 'white' : '#1e293b'}>{count}</text>}</g> ); }))}
         </svg>
       </div>
     </div>
   );
 };
 
-// --- COMPONENT: Geo/Species Chart (Updated) ---
+// --- COMPONENT: Geo/Species Chart (SVG) ---
 const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
   const locRef = useRef<SVGSVGElement | null>(null);
   const specRef = useRef<SVGSVGElement | null>(null);
@@ -977,14 +1394,10 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
     return { topLocs, topSpecs };
   }, [papers]);
 
-  const fontSize = 12; // Increased
-  const barHeight = 40; // Increased
-  const gap = 15; 
-  const textWidth = 180; // Increased
-  const width = 500; 
-
+  const barHeight = 25; const gap = 15; const textWidth = 140; // Widened text area
   const locHeight = Math.max(300, data.topLocs.length * (barHeight + gap) + 40);
   const specHeight = Math.max(300, data.topSpecs.length * (barHeight + gap) + 40);
+  const width = 400; 
 
   const handleExport = (ref: React.RefObject<SVGSVGElement | null>, name: string) => { if (!ref.current) return; const svgData = new XMLSerializer().serializeToString(ref.current); const canvas = document.createElement("canvas"); const ctx = canvas.getContext("2d"); const img = new Image(); img.onload = () => { canvas.width = width; canvas.height = ref.current?.clientHeight || 400; if (ctx) { ctx.fillStyle = "white"; ctx.fillRect(0, 0, width, canvas.height); ctx.drawImage(img, 0, 0); const link = document.createElement("a"); link.href = canvas.toDataURL("image/png"); link.download = `${name}.png`; link.click(); } }; img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData))); };
   const handleExportDataCSV = () => { const csvContent = ["Type,Name,Count", ...data.topLocs.map(x => `Location,"${x[0]}",${x[1]}`), ...data.topSpecs.map(x => `Species,"${x[0]}",${x[1]}`)].join("\n"); const blob = new Blob([csvContent], { type: 'text/csv' }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "demographics.csv"; link.click(); };
@@ -997,19 +1410,12 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
         {/* Locations */}
         <div>
            <div className="flex justify-between mb-2"><span className="text-xs font-bold text-blue-700 uppercase">Top Locations</span><button onClick={() => handleExport(locRef, 'locations')} className="text-xs text-blue-500 hover:underline">Save Image</button></div>
-           <svg ref={locRef} width={width} height={locHeight} className="border border-slate-100 rounded bg-slate-50">
-              <style>{`text { font-family: sans-serif; font-size: ${fontSize}px; }`}</style>
+           <svg ref={locRef} width={width} height={locHeight} className="border border-slate-100 rounded bg-slate-50"><style>{`text { font-family: sans-serif; font-size: 13px; }`}</style>
               {data.topLocs.map(([name, count], i) => {
                  const y = 20 + i * (barHeight + gap);
                  const max = data.topLocs[0][1];
-                 const w = Math.max(5, (count / max) * (width - textWidth - 60));
-                 return (
-                  <g key={`l-${i}`}>
-                    <WrappedText x={10} y={y + 16} text={name} width={textWidth - 20} fontSize={fontSize} />
-                    <rect x={textWidth} y={y} width={w} height={barHeight} rx={4} fill="#3b82f6" />
-                    <text x={textWidth + w + 8} y={y + (barHeight/2) + 5} fill="#64748b" fontWeight="bold">{count}</text>
-                  </g>
-                 );
+                 const w = Math.max(5, (count / max) * (width - textWidth - 50));
+                 return (<g key={`l-${i}`}><text x={10} y={y + 16} fill="#475569">{name.substring(0, 20)}</text><rect x={textWidth} y={y} width={w} height={barHeight} rx={4} fill="#3b82f6" /><text x={textWidth + w + 8} y={y + 16} fill="#64748b" fontWeight="bold">{count}</text></g>);
               })}
            </svg>
         </div>
@@ -1017,19 +1423,12 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
         {/* Species */}
         <div>
            <div className="flex justify-between mb-2"><span className="text-xs font-bold text-purple-700 uppercase">Top Taxa / Species</span><button onClick={() => handleExport(specRef, 'taxa')} className="text-xs text-purple-500 hover:underline">Save Image</button></div>
-           <svg ref={specRef} width={width} height={specHeight} className="border border-slate-100 rounded bg-slate-50">
-              <style>{`text { font-family: sans-serif; font-size: ${fontSize}px; }`}</style>
+           <svg ref={specRef} width={width} height={specHeight} className="border border-slate-100 rounded bg-slate-50"><style>{`text { font-family: sans-serif; font-size: 13px; }`}</style>
               {data.topSpecs.map(([name, count], i) => {
                  const y = 20 + i * (barHeight + gap);
                  const max = data.topSpecs[0][1];
-                 const w = Math.max(5, (count / max) * (width - textWidth - 60));
-                 return (
-                   <g key={`s-${i}`}>
-                    <WrappedText x={10} y={y + 16} text={name} width={textWidth - 20} fontSize={fontSize} />
-                    <rect x={textWidth} y={y} width={w} height={barHeight} rx={4} fill="#8b5cf6" />
-                    <text x={textWidth + w + 8} y={y + (barHeight/2) + 5} fill="#64748b" fontWeight="bold">{count}</text>
-                   </g>
-                 );
+                 const w = Math.max(5, (count / max) * (width - textWidth - 50));
+                 return (<g key={`s-${i}`}><text x={10} y={y + 16} fill="#475569">{name.substring(0, 20)}</text><rect x={textWidth} y={y} width={w} height={barHeight} rx={4} fill="#8b5cf6" /><text x={textWidth + w + 8} y={y + 16} fill="#64748b" fontWeight="bold">{count}</text></g>);
               })}
            </svg>
         </div>
@@ -1038,6 +1437,7 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
   );
 };
 
+// --- COMPONENT: Chat Panel ---
 const ChatPanel = ({ papers, apiKey, modelId }: { papers: Paper[], apiKey: string, modelId: string }) => {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<ChatMessage[]>([{ role: 'ai', text: 'Ask me anything about the extracted papers! (e.g., "Which studies focused on fire impacts in Canada?"). Note: this is an assistance feature only, and cannot be used as a replacement for scientific review. Do not draw conclusions from this chatbot alone.', timestamp: Date.now() }]);
@@ -1072,6 +1472,7 @@ const ChatPanel = ({ papers, apiKey, modelId }: { papers: Paper[], apiKey: strin
 
 const App = () => {
   useEffect(() => { 
+    // GA initialization logic can go here if needed
     console.log("GA Init"); 
   }, []);
   
@@ -1102,8 +1503,10 @@ const App = () => {
   const [enableSpecies, setEnableSpecies] = useState(true); 
   const [isOptimized, setIsOptimized] = useState(false); 
   
+  // New States for Grouping Toggle
   const [isDriverGrouped, setIsDriverGrouped] = useState(false);
   const [isResponseGrouped, setIsResponseGrouped] = useState(false);
+  // NEW: Separate state for Terms Normalization status
   const [isTermsNormalized, setIsTermsNormalized] = useState(false);
   
   const [consolidationSuggestions, setConsolidationSuggestions] = useState<ConsolidationSuggestion[] | null>(null);
@@ -1113,18 +1516,22 @@ const App = () => {
   const [synthesisModalOpen, setSynthesisModalOpen] = useState(false); 
   const [synthesisThemeKey, setSynthesisThemeKey] = useState('');
   const [synthesisResult, setSynthesisResult] = useState<SynthesisResult | null>(null);
-  // NEW State for Bulk Results
-  const [bulkSynthesisData, setBulkSynthesisData] = useState<BulkSection[] | null>(null);
 
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [expandedThemes, setExpandedThemes] = useState<Record<string, boolean>>({});
   const [showSettings, setShowSettings] = useState(true);
-  const [lockedItems, setLockedItems] = useState<string[]>([]); 
+  const [lockedItems, setLockedItems] = useState<string[]>([]); // Format: "cat:Name" or "theme:Cat|||Name"
 
   const [editingItem, setEditingItem] = useState<{ id: string, type: 'cat' | 'theme', originalName: string, parentCat?: string, value: string } | null>(null);
   
+  // DRAG & DROP STATE
   const [draggedItem, setDraggedItem] = useState<DragItem | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+
+  // BULK SYNTHESIS STATES
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [bulkResults, setBulkResults] = useState<any[] | null>(null);
+  const [bulkType, setBulkType] = useState<'sub' | 'main'>('sub');
 
   const resultsEndRef = useRef<HTMLDivElement>(null); 
   const activeModelId = selectedModel;
@@ -1163,6 +1570,7 @@ const App = () => {
         return p;
     }));
     
+    // Migrate locks if necessary
     setLockedItems(prev => {
         const oldKey = type === 'cat' ? `cat:${originalName}` : `theme:${parentCat}|||${originalName}`;
         const newKey = type === 'cat' ? `cat:${trimmed}` : `theme:${parentCat}|||${trimmed}`;
@@ -1176,14 +1584,15 @@ const App = () => {
     setIsOptimized(true); 
   };
   
+  // DRAG HANDLERS
   const handleDragStart = (e: React.DragEvent, item: DragItem) => {
       e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', JSON.stringify(item));
+      e.dataTransfer.setData('text/plain', JSON.stringify(item)); // Fallback
       setDraggedItem(item);
   };
 
   const handleDragOver = (e: React.DragEvent, targetId: string) => {
-      e.preventDefault(); 
+      e.preventDefault(); // Allow drop
       setDragOverTarget(targetId);
   };
   
@@ -1197,11 +1606,18 @@ const App = () => {
       
       if (!draggedItem) return;
 
+      // Logic:
+      // 1. Theme -> Category (Move)
+      // 2. Theme -> Theme (Merge)
+      // 3. Category -> Category (Merge)
+
       let newPapers = [...papers];
       let changeMade = false;
 
+      // CASE 1: Drag Theme -> Category (Move to that category)
       if (draggedItem.type === 'theme' && target.type === 'cat') {
-          if (draggedItem.parentCat === target.name) return; 
+          if (draggedItem.parentCat === target.name) return; // Dropped on own parent
+          
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.parentCat && p.theme === draggedItem.name) {
                   return { ...p, category: target.name };
@@ -1210,8 +1626,10 @@ const App = () => {
           });
           changeMade = true;
       }
+      // CASE 2: Drag Theme -> Theme (Merge into target theme)
       else if (draggedItem.type === 'theme' && target.type === 'theme') {
-          if (draggedItem.name === target.name && draggedItem.parentCat === target.parentCat) return; 
+          if (draggedItem.name === target.name && draggedItem.parentCat === target.parentCat) return; // Dropped on self
+          
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.parentCat && p.theme === draggedItem.name) {
                   return { ...p, category: target.parentCat!, theme: target.name };
@@ -1220,8 +1638,10 @@ const App = () => {
           });
           changeMade = true;
       }
+      // CASE 3: Drag Category -> Category (Merge into target category)
       else if (draggedItem.type === 'cat' && target.type === 'cat') {
-          if (draggedItem.name === target.name) return; 
+          if (draggedItem.name === target.name) return; // Dropped on self
+          
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.name) {
                   return { ...p, category: target.name };
@@ -1245,33 +1665,48 @@ const App = () => {
     setError(null);
 
     try {
-        const optimization = await optimizeStructureWithGemini(papers, apiKey, reviewTopic, selectedModel, enableSpecies, (msg) => setRetryStatus(msg));
+        const optimization = await optimizeStructureWithGemini(
+            papers,
+            apiKey,
+            reviewTopic,
+            selectedModel,
+            enableSpecies,
+            (msg) => setRetryStatus(msg)
+        );
 
         if (optimization && optimization.moves && optimization.moves.length > 0) {
             const movesMap = new Map(optimization.moves.map(m => [m.paper_id, m]));
+            
             setPapers(prevPapers => prevPapers.map(p => {
                 const move = movesMap.get(p.id);
                 if (move) {
                     return {
                         ...p,
+                        // Normalize primary fields (Driver/Response/Location/Species)
                         driver: move.new_driver || p.driver,
                         response: move.new_response || p.response,
                         location: move.new_location || p.location,
                         species: move.new_species || p.species,
+                        
+                        // Populate grouping fields with the new groups
                         driverGroup: move.new_driver_group || (move.new_driver || p.driver),
                         responseGroup: move.new_response_group || (move.new_response || p.response),
+                        
+                        // Update Category/Theme (often suggested for normalization)
                         category: move.new_category || p.category,
                         theme: move.new_theme || p.theme,
                     };
                 }
                 return p;
             }));
-            setIsTermsNormalized(true); 
+            setIsTermsNormalized(true); // Only set separate normalization state
             setError(`✅ Metadata optimization complete. Normalized ${optimization.moves.length} fields.`);
         } else {
             setIsTermsNormalized(true); 
             setError("✅ Metadata optimization complete. No significant field changes suggested.");
         }
+
+        // After initial optimization, set both toggles to grouped state to reflect the refined data immediately.
         setIsDriverGrouped(true);
         setIsResponseGrouped(true);
 
@@ -1281,7 +1716,7 @@ const App = () => {
         setIsConsolidating(false);
         setRetryStatus('');
     }
-  };
+};
 
   const handleProcessAll = async (resumeFromIndex: number = 0, resumeText: string = '') => {
     if (!inputText.trim() && !resumeText) { setError("Please paste your full list of papers first."); return; }
@@ -1292,6 +1727,7 @@ const App = () => {
     setIsConsolidationComplete(false); 
     stopSignal.current = false;
     
+    // Clean Input
     const rawText = resumeText || inputText;
     const cleanedText = cleanRawText(rawText);
     const textBatches = createBatches(cleanedText, 25000); 
@@ -1381,18 +1817,28 @@ const App = () => {
         await wait(2000);
       }
       
+      // AUTO-AUDIT LOGIC ADDED HERE
       if (!stopSignal.current && accumulatedPapers.length > 0) {
         setRetryStatus("Finalizing: Auditing Taxonomy...");
+        
+        // 1. Generate unique "Category ||| Theme" list
         const uniquePairs = new Set<string>();
         accumulatedPapers.forEach(p => uniquePairs.add(`${p.category} ||| ${p.theme}`));
         const taxonomyList = Array.from(uniquePairs);
+
+        // 2. Call the superior structural auditor
         const audit = await auditTaxonomyWithGemini(taxonomyList, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(msg));
         
+        // 3. Apply fixes
         let finalPapers = accumulatedPapers;
         if (audit && audit.fixes && audit.fixes.length > 0) {
            finalPapers = accumulatedPapers.map(p => { 
              const fix = audit.fixes.find(f => f.original_category === p.category && f.original_theme === p.theme); 
-             return fix ? { ...p, category: fix.new_category, theme: fix.new_theme } : p; 
+             return fix ? { 
+               ...p, 
+               category: fix.new_category, 
+               theme: fix.new_theme
+             } : p; 
            });
            setPapers(finalPapers); 
            setError(`✅ Done! Processed ${accumulatedPapers.length} papers. Auto-merged ${audit.fixes.length} categories.`);
@@ -1437,6 +1883,7 @@ const App = () => {
       analyzeWithGemini(newText, taxonomy, apiKey, reviewTopic, activeModelId, enableSpecies, (msg) => setRetryStatus(msg))
         .then(analysis => { 
              const result = analysis.result;
+             
              const newPapers = result.papers.map((p, idx) => ({
                   id: `b${batchCount}-fixed-${idx}-${Date.now()}`,
                   title: p.title, 
@@ -1452,7 +1899,7 @@ const App = () => {
                   species: p.study_species || "Unspecified",
                   keyFinding: p.key_finding, 
                   impactKeywords: p.impact_keywords, 
-                  batchId: batchCount + 1,
+                  batchId: batchCount + 1, // Use the next batch ID
                   authors: p.authors, 
                   year: p.year, 
                   journal: p.journal, 
@@ -1460,7 +1907,8 @@ const App = () => {
                   modelUsed: activeModelId
             }));
             setPapers(prev => [...prev, ...newPapers]);
-            setBatchCount(prev => prev + 1); 
+            setBatchCount(prev => prev + 1); // Increment batch count
+            
             handleProcessAll(resumeIndex + 1); 
         })
         .catch(err => {
@@ -1472,11 +1920,14 @@ const App = () => {
 
   const handleClearAll = () => { setPapers([]); setBatchCount(0); setInputText(''); setError(null); setConsolidationSuggestions(null); setIsConsolidationComplete(false); setFilteredPapers(null); setIsOptimized(false); setIsTermsNormalized(false); setRejectedSuggestions([]); setLockedItems([]); setIsDriverGrouped(false); setIsResponseGrouped(false); };
   
+  // NEW: Accept Suggestion Handler
   const handleAcceptSuggestion = (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
 
       let newPapers = [...papers];
+      
+      // 1. Apply MERGE
       if (suggestion.suggested_merge) {
           const { themes_to_combine, new_theme_name } = suggestion.suggested_merge;
           newPapers = newPapers.map(p => {
@@ -1486,6 +1937,8 @@ const App = () => {
               return p;
           });
       }
+
+      // 2. Apply MOVE
       if (suggestion.suggested_move) {
           const { theme, current_category, target_category } = suggestion.suggested_move;
           newPapers = newPapers.map(p => {
@@ -1495,6 +1948,8 @@ const App = () => {
               return p;
           });
       }
+
+      // 3. Apply CATEGORY MERGE (and clean up zombie suggestions)
       if (suggestion.suggested_category_merge) {
           const { source_category, target_category } = suggestion.suggested_category_merge;
           newPapers = newPapers.map(p => {
@@ -1503,145 +1958,277 @@ const App = () => {
               }
               return p;
           });
+
+          // UPDATE PENDING SUGGESTIONS to reflect the category merge
           if (consolidationSuggestions) {
              const updatedSuggestions = consolidationSuggestions.map(s => {
-                  if (s.id === suggestionId) return s; 
-                  if (s.main_category === source_category) return { ...s, main_category: target_category };
-                  if (s.suggested_move && s.suggested_move.current_category === source_category) return { ...s, suggested_move: { ...s.suggested_move, current_category: target_category } };
-                  if (s.suggested_move && s.suggested_move.target_category === source_category) return { ...s, suggested_move: { ...s.suggested_move, target_category: target_category } };
+                  if (s.id === suggestionId) return s; // Will be removed anyway
+
+                  // If another suggestion was inside the merged category, update it
+                  if (s.main_category === source_category) {
+                      return { ...s, main_category: target_category };
+                  }
+                  // Update moves FROM the merged category
+                  if (s.suggested_move && s.suggested_move.current_category === source_category) {
+                      return { ...s, suggested_move: { ...s.suggested_move, current_category: target_category } };
+                  }
+                  // Update moves TO the merged category
+                  if (s.suggested_move && s.suggested_move.target_category === source_category) {
+                      return { ...s, suggested_move: { ...s.suggested_move, target_category: target_category } };
+                  }
                   return s;
              });
              setConsolidationSuggestions(updatedSuggestions);
           }
       }
+
+      // 4. Apply RENAME (and update pending suggestions)
       if (suggestion.suggested_rename) {
           const { current_name, new_name } = suggestion.suggested_rename;
+          
+          // Apply to papers
           newPapers = newPapers.map(p => {
-              if (p.category === current_name) return { ...p, category: new_name };
+              if (p.category === current_name) {
+                  return { ...p, category: new_name };
+              }
               return p;
           });
+
+          // CRITICAL: Update other pending suggestions that reference the old name
           if (consolidationSuggestions) {
               const updatedSuggestions = consolidationSuggestions.map(s => {
-                  if (s.id === suggestionId) return s; 
-                  if (s.main_category === current_name) return { ...s, main_category: new_name };
-                  if (s.suggested_move && s.suggested_move.current_category === current_name) return { ...s, suggested_move: { ...s.suggested_move, current_category: new_name } };
-                  if (s.suggested_move && s.suggested_move.target_category === current_name) return { ...s, suggested_move: { ...s.suggested_move, target_category: new_name } };
-                  if (s.suggested_category_merge && s.suggested_category_merge.source_category === current_name) return { ...s, suggested_category_merge: { ...s.suggested_category_merge, source_category: new_name } };
-                  if (s.suggested_category_merge && s.suggested_category_merge.target_category === current_name) return { ...s, suggested_category_merge: { ...s.suggested_category_merge, target_category: new_name } };
+                  if (s.id === suggestionId) return s; // Ignore current one (will be removed)
+                  
+                  // If another suggestion is inside the renamed category, update its main_category ref
+                  if (s.main_category === current_name) {
+                      return { ...s, main_category: new_name };
+                  }
+                  
+                  // If another suggestion is a move FROM the renamed category
+                  if (s.suggested_move && s.suggested_move.current_category === current_name) {
+                      return { ...s, suggested_move: { ...s.suggested_move, current_category: new_name } };
+                  }
+
+                  // If another suggestion is a move TO the renamed category
+                  if (s.suggested_move && s.suggested_move.target_category === current_name) {
+                      return { ...s, suggested_move: { ...s.suggested_move, target_category: new_name } };
+                  }
+                  
+                  // If another suggestion is a MERGE of this category
+                  if (s.suggested_category_merge && s.suggested_category_merge.source_category === current_name) {
+                       return { ...s, suggested_category_merge: { ...s.suggested_category_merge, source_category: new_name } };
+                  }
+                  if (s.suggested_category_merge && s.suggested_category_merge.target_category === current_name) {
+                       return { ...s, suggested_category_merge: { ...s.suggested_category_merge, target_category: new_name } };
+                  }
+
                   return s;
               });
               setConsolidationSuggestions(updatedSuggestions);
           }
       }
+
       setPapers(newPapers);
-      setIsOptimized(true); 
+      setIsOptimized(true); // Structure is optimized, but not terms
+      
+      // Remove accepted suggestion from list
       setConsolidationSuggestions(prev => prev ? prev.filter(s => s.id !== suggestionId) : null);
   };
 
+  // NEW: Reject Suggestion Handler
   const handleRejectSuggestion = (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
+
       const signature = getSuggestionSignature(suggestion);
-      if (signature) setRejectedSuggestions(prev => [...prev, signature]);
+      if (signature) {
+          setRejectedSuggestions(prev => [...prev, signature]);
+      }
+      
+      // Remove rejected suggestion from list
       setConsolidationSuggestions(prev => prev ? prev.filter(s => s.id !== suggestionId) : null);
   };
 
+  // NEW: Handle Reverse Suggestion Logic
   const handleReverseSuggestion = async (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
+      
       setVerifyingSuggestionId(suggestionId);
+      
       try {
           if (suggestion.suggested_category_merge) {
+              // CASE 1: Category Merge Reverse
               const { source_category, target_category } = suggestion.suggested_category_merge;
               const result = await reverseSuggestionWithGemini(source_category, target_category, apiKey, activeModelId, () => {});
+              
               if (result && result.reason) {
+                  // Flip the suggestion in place
                   setConsolidationSuggestions(prev => prev?.map(s => {
                       if (s.id === suggestionId && s.suggested_category_merge) {
-                          return { ...s, suggested_category_merge: { source_category: target_category, target_category: source_category, reason: result.reason } };
+                          return {
+                              ...s,
+                              suggested_category_merge: {
+                                  source_category: target_category,
+                                  target_category: source_category,
+                                  reason: result.reason
+                              }
+                          };
                       }
                       return s;
                   }) || null);
               }
           } else if (suggestion.suggested_move) {
+              // CASE 2: Move Sub-Section Reverse -> Convert to Main Category Merge
+              // User logic: "Move Sub A from Cat X to Cat Y" reversed means "Merge Cat Y into Cat X"
               const { current_category, target_category } = suggestion.suggested_move;
+              
+              // We ask the AI to justify merging the Target into the Current (the reverse of moving the sub-theme out)
               const result = await reverseSuggestionWithGemini(target_category, current_category, apiKey, activeModelId, () => {});
+
               if (result && result.reason) {
                    setConsolidationSuggestions(prev => prev?.map(s => {
                       if (s.id === suggestionId) {
-                          return { ...s, suggested_move: null, suggested_category_merge: { source_category: target_category, target_category: current_category, reason: `(Reversed Move) ${result.reason}` } };
+                          // TRANSFORM into a Category Merge suggestion
+                          return {
+                              ...s,
+                              suggested_move: null,
+                              suggested_category_merge: {
+                                  source_category: target_category,
+                                  target_category: current_category,
+                                  reason: `(Reversed Move) ${result.reason}`
+                              }
+                          };
                       }
                       return s;
                    }) || null);
               }
           }
-      } catch (err) { console.error("Reverse failed", err); } finally { setVerifyingSuggestionId(null); }
+
+      } catch (err) {
+          console.error("Reverse failed", err);
+      } finally {
+          setVerifyingSuggestionId(null);
+      }
   };
 
+  // NEW: Handle Verify Move Logic
   const handleVerifyMove = async (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion || !suggestion.suggested_move) return;
+
       setVerifyingSuggestionId(suggestionId);
+
       try {
           const { theme, current_category, target_category } = suggestion.suggested_move;
-          const themePapers = papers.filter(p => p.category === current_category && p.theme === theme).slice(0, 50).map(p => p.title);
+          
+          // Get MORE papers for verification (up to 50)
+          const themePapers = papers
+            .filter(p => p.category === current_category && p.theme === theme)
+            .slice(0, 50)
+            .map(p => p.title);
+
           if (themePapers.length === 0) return;
+
           const verification = await verifyMoveWithGemini(theme, current_category, target_category, themePapers, apiKey, activeModelId, () => {});
+          
           if (verification.isValid) {
+               // Mark as verified
                setConsolidationSuggestions(prev => prev?.map(s => s.id === suggestionId ? { ...s, isVerified: true } : s) || null);
           } else {
+               // Auto-reject / Remove from list if invalid
                setConsolidationSuggestions(prev => prev?.filter(s => s.id !== suggestionId) || null);
+               // Optional: Show a toast saying "Suggestion removed based on deep verification."
           }
-      } catch (err) { console.error("Verification failed", err); } finally { setVerifyingSuggestionId(null); }
+      } catch (err) {
+          console.error("Verification failed", err);
+      } finally {
+          setVerifyingSuggestionId(null);
+      }
   };
 
   const handleConsolidateThemes = async () => { 
       if (papers.length === 0 || !apiKey) return; 
       setIsConsolidating(true); 
       setConsolidationSuggestions(null);
+      // Reset complete flag to hide the "Refine" message while processing
       setIsConsolidationComplete(false); 
       setRetryStatus("Consolidating Taxonomy...");
+      
       try {
         const taxonomy: Taxonomy = {};
         const paperSamples: Record<string, string[]> = {};
+
         papers.forEach(p => { 
+          // Build Taxonomy Structure
           if (!taxonomy[p.category]) taxonomy[p.category] = []; 
           if (!taxonomy[p.category].includes(p.theme)) taxonomy[p.category].push(p.theme); 
+          
+          // Build Paper Samples (Title only) to provide context for moves
+          // FIXED: Use a cleaner key for the prompt
           const sampleKey = `${p.category}: ${p.theme}`;
           if (!paperSamples[sampleKey]) paperSamples[sampleKey] = [];
           if (paperSamples[sampleKey].length < 10) paperSamples[sampleKey].push(p.title);
         });
+
+        // Use the new consolidation logic with rejected suggestions
         const consolidation = await consolidateThemesWithGemini(taxonomy, paperSamples, apiKey, reviewTopic, activeModelId, rejectedSuggestions, lockedItems, (msg) => setRetryStatus(msg));
         
         if (consolidation.suggestions && consolidation.suggestions.length > 0) {
            const suggestionsForUI: ConsolidationSuggestion[] = [];
+
            consolidation.suggestions.forEach(suggestion => {
               let isMeaningfulChange = false;
+
+              // 1. Check MERGE Validity
               if (suggestion.suggested_merge) {
                  const { themes_to_combine, new_theme_name } = suggestion.suggested_merge;
                  const cleanNewName = new_theme_name.trim();
                  const cleanThemes = themes_to_combine.map(t => t.trim());
+                 // Filter out self-merges
                  const isSelfMerge = cleanThemes.length === 1 && cleanThemes[0] === cleanNewName;
+                 
+                 // FILTER OUT LOCKED SUB-THEMES (If any involved are locked, ignore)
                  const involvesLocked = cleanThemes.some(t => lockedItems.includes(`theme:${suggestion.main_category}|||${t}`));
-                 if (!isSelfMerge && cleanThemes.length > 0 && !involvesLocked) isMeaningfulChange = true;
-                 else suggestion.suggested_merge = null;
+
+                 if (!isSelfMerge && cleanThemes.length > 0 && !involvesLocked) {
+                     isMeaningfulChange = true;
+                 } else {
+                    suggestion.suggested_merge = null;
+                 }
               }
+
+              // 2. Check MOVE Validity
               if (suggestion.suggested_move) {
                  const { theme, current_category, target_category } = suggestion.suggested_move;
                  const isLocked = lockedItems.includes(`theme:${current_category}|||${theme}`);
-                 if (current_category !== target_category && !isLocked) isMeaningfulChange = true;
-                 else suggestion.suggested_move = null;
+                 if (current_category !== target_category && !isLocked) {
+                     isMeaningfulChange = true;
+                 } else {
+                    suggestion.suggested_move = null;
+                 }
               }
+
+              // 3. Check CATEGORY MERGE Validity
               if (suggestion.suggested_category_merge) {
                  const { source_category, target_category } = suggestion.suggested_category_merge;
                  const isLocked = lockedItems.includes(`cat:${source_category}`) || lockedItems.includes(`cat:${target_category}`);
-                 if (source_category !== target_category && !isLocked) isMeaningfulChange = true;
-                 else suggestion.suggested_category_merge = null;
+                 if (source_category !== target_category && !isLocked) {
+                     isMeaningfulChange = true;
+                 } else {
+                    suggestion.suggested_category_merge = null;
+                 }
               }
+
+              // 4. Check RENAME Validity
               if (suggestion.suggested_rename) {
                  const { current_name, new_name } = suggestion.suggested_rename;
                  const isLocked = lockedItems.includes(`cat:${current_name}`);
-                 if (current_name !== new_name && !isLocked) isMeaningfulChange = true;
-                 else suggestion.suggested_rename = null;
+                 if (current_name !== new_name && !isLocked) {
+                     isMeaningfulChange = true;
+                 } else {
+                    suggestion.suggested_rename = null;
+                 }
               }
 
               if (isMeaningfulChange) {
@@ -1655,8 +2242,13 @@ const App = () => {
                   });
               }
            });
-           if (suggestionsForUI.length === 0) setConsolidationSuggestions([{ id: 'ok', main_category: 'Success', suggested_merge: { themes_to_combine: [], new_theme_name: 'Structure is Optimal', reason: 'No significant improvements found.' } }]); 
-           else setConsolidationSuggestions(suggestionsForUI);
+
+           if (suggestionsForUI.length === 0) {
+                setConsolidationSuggestions([{ id: 'ok', main_category: 'Success', suggested_merge: { themes_to_combine: [], new_theme_name: 'Structure is Optimal', reason: 'No significant improvements found.' } }]); 
+           } else {
+               // DO NOT APPLY AUTOMATICALLY. Just set suggestions.
+               setConsolidationSuggestions(suggestionsForUI);
+           }
         } else { 
            setConsolidationSuggestions([{ id: 'ok', main_category: 'Success', suggested_merge: { themes_to_combine: [], new_theme_name: 'Structure is Optimal', reason: 'No significant improvements found.' } }]); 
         }
@@ -1669,7 +2261,6 @@ const App = () => {
       const targets = papers.filter(p => p.category === cat && p.theme === theme);
       if (!targets.length) return;
       setSynthesisThemeKey(`${cat}-${theme}`); 
-      setBulkSynthesisData(null); // Clear bulk data
       setSynthesisModalOpen(true); 
       setIsSynthesizing(true);
       try { 
@@ -1685,8 +2276,7 @@ const App = () => {
       if (!apiKey) { setError("No API Key"); return; }
       const targets = papers.filter(p => p.category === cat);
       if (!targets.length) return;
-      setSynthesisThemeKey(`${cat}`); 
-      setBulkSynthesisData(null); // Clear bulk data
+      setSynthesisThemeKey(`${cat}`); // Just the category name
       setSynthesisModalOpen(true);
       setIsSynthesizing(true);
       try { 
@@ -1698,14 +2288,11 @@ const App = () => {
       } finally { setIsSynthesizing(false); }
   };
 
-  // UPDATED: Bulk Sub-Themes
-  const handleBulkSubThemeSynthesis = async () => { 
+  const handleOverallSynthesisAndExport = async () => { 
       if (!apiKey || papers.length === 0) return; 
       setIsBulkSynthesizing(true); 
-      setBulkSynthesisData(null);
       setError(null); 
       setRetryStatus('');
-      
       try {
         const grouped: Record<string, Record<string, Paper[]>> = {}; 
         papers.forEach(p => { 
@@ -1714,42 +2301,49 @@ const App = () => {
           grouped[p.category][p.theme].push(p); 
         });
         
-        const finalSections: BulkSection[] = [];
+        const finalSections: any[] = [];
         for (const cat of Object.keys(grouped).sort()) { 
           for (const theme of Object.keys(grouped[cat]).sort()) {
             const pData = grouped[cat][theme].map((p: any) => ({ keyFinding: p.keyFinding, impactKeywords: p.impactKeywords, shortCitation: p.shortCitation }));
-            setRetryStatus(`Synthesizing: ${theme}...`);
-            const result = await synthesizeSectionWithGemini(theme, pData, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(`Synthesizing: ${msg}`));
+            setRetryStatus(`Bulk: ${theme}...`);
+            const result = await synthesizeSectionWithGemini(theme, pData, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(`Bulk: ${msg}`));
             finalSections.push({ category: cat, theme, result: { ...result, modelUsed: activeModelId } });
           } 
         }
         
-        setBulkSynthesisData(finalSections);
-        setSynthesisModalOpen(true); // Open modal with results instead of downloading immediately
+        // --- CHANGED: Store in state and open modal instead of immediate download ---
+        setBulkResults(finalSections);
+        setBulkType('sub');
+        setBulkModalOpen(true);
       } catch (err: any) { setError(err.message); } finally { setIsBulkSynthesizing(false); setRetryStatus(''); }
   };
 
-  // UPDATED: Bulk Main Categories
-  const handleBulkMainCategorySynthesis = async () => {
+  // NEW: Bulk Synthesis for Main Categories (Aggregating Sub-Themes)
+  const handleBulkMainSynthesis = async () => {
       if (!apiKey || papers.length === 0) return; 
       setIsBulkSynthesizing(true); 
-      setBulkSynthesisData(null);
       setError(null); 
       setRetryStatus('');
       try {
         const uniqueCats = Array.from(new Set(papers.map(p => p.category))).sort();
-        const finalSections: BulkSection[] = [];
+        const finalSections: any[] = [];
 
         for (const cat of uniqueCats) {
+            // Get all papers for this MAIN category, regardless of sub-theme
             const catPapers = papers.filter(p => p.category === cat);
             const pData = catPapers.map((p: any) => ({ keyFinding: p.keyFinding, impactKeywords: p.impactKeywords, shortCitation: p.shortCitation }));
-            setRetryStatus(`Synthesizing: ${cat}...`);
-            const result = await synthesizeSectionWithGemini(cat, pData, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(`Synthesizing: ${msg}`));
+            
+            setRetryStatus(`Bulk Main: ${cat}...`);
+            // We reuse synthesizeSectionWithGemini but pass the Main Category name as the "theme" context
+            const result = await synthesizeSectionWithGemini(cat, pData, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(`Bulk Main: ${msg}`));
             finalSections.push({ category: cat, result: { ...result, modelUsed: activeModelId } });
         }
 
-        setBulkSynthesisData(finalSections);
-        setSynthesisModalOpen(true); // Open modal with results
+        // --- CHANGED: Store in state and open modal instead of immediate download ---
+        setBulkResults(finalSections);
+        setBulkType('main');
+        setBulkModalOpen(true);
+
       } catch (err: any) { setError(err.message); } finally { setIsBulkSynthesizing(false); setRetryStatus(''); }
   };
   
@@ -1767,7 +2361,11 @@ const App = () => {
   
   const exportStateJSON = () => { 
     if (papers.length === 0) return; 
-    const dataToSave = { papers, reviewTopic, isTermsNormalized };
+    const dataToSave = {
+        papers,
+        reviewTopic,
+        isTermsNormalized // Save this state!
+    };
     const blob = new Blob([JSON.stringify(dataToSave, null, 2)], { type: 'application/json' }); 
     const link = document.createElement("a"); 
     link.href = URL.createObjectURL(blob); 
@@ -1790,9 +2388,17 @@ const App = () => {
             const newExpanded: any = {}; 
             json.papers.forEach((p: Paper) => newExpanded[p.category] = true); 
             setExpandedCategories(newExpanded); 
+            
+            // Restore normalization state
             setIsTermsNormalized(json.isTermsNormalized || false);
-            if (json.isTermsNormalized) { setIsDriverGrouped(true); setIsResponseGrouped(true); }
+            if (json.isTermsNormalized) {
+                 // If previously normalized, default groupings to ON
+                 setIsDriverGrouped(true);
+                 setIsResponseGrouped(true);
+            }
+            // If data is loaded, assume it's not preliminary structure unless it is empty
             setIsOptimized(true);
+
             setError(`Loaded ${json.papers.length} papers.`); 
           } 
         } catch { setError("Invalid JSON"); } 
@@ -1803,7 +2409,10 @@ const App = () => {
   const uniqueCategories = Array.from(new Set(papers.map(p => p.category))).sort();
 
   const renderListView = () => {
+    
+    // Check if we should show the hint (only if NO suggestions are pending)
     const showConsolidationHint = papers.length > 0 && (!consolidationSuggestions || consolidationSuggestions.length === 0) && !isConsolidating;
+
     let consolidationHintMessage = "";
     let consolidationHintTitle = "";
     let consolidationHintIcon = <Layers className='h-5 w-5' />;
@@ -1828,17 +2437,27 @@ const App = () => {
             </div>
         )}
 
+        {/* Theme Consolidation Explanation and Suggestions Area */}
         {showConsolidationHint && (
             <div className="p-4 rounded-lg shadow-md border bg-blue-50 border-blue-200 mb-4">
-                <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-blue-800">{consolidationHintIcon}{consolidationHintTitle}</h3>
+                <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-blue-800">
+                    {consolidationHintIcon}
+                    {consolidationHintTitle}
+                </h3>
                 <p className='text-sm text-blue-700' dangerouslySetInnerHTML={{ __html: consolidationHintMessage }} />
             </div>
         )}
         
+        {/* New: Synthesis Explanation Box */}
         {papers.length > 0 && (
             <div className="p-4 rounded-lg shadow-md border bg-yellow-50 border-yellow-200 mb-4">
-                <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-yellow-800"><Zap className='h-5 w-5' /> Synthesize Section Findings</h3>
-                <p className='text-sm text-yellow-700'>Click the ✨ **Sparkle button** next to any Sub-Section header to instantly generate a bulleted summary of all papers within that **single section**, complete with in-text citations, and an **analysis of any contradictory findings**. Use the **Synthesize All** buttons above to run this process for all sections simultaneously.</p>
+                <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-yellow-800">
+                    <Zap className='h-5 w-5' />
+                    Synthesize Section Findings
+                </h3>
+                <p className='text-sm text-yellow-700'>
+                    Click the ✨ **Sparkle button** next to any Sub-Section header to instantly generate a bulleted summary of all papers within that **single section**, complete with in-text citations, and an **analysis of any contradictory findings**. Use the **Bulk Synthesis & Export** button above to run this process for all sections simultaneously.
+                </p>
             </div>
         )}
 
@@ -1885,16 +2504,30 @@ const App = () => {
                                     )}
                                 </div>
                                 <div className="flex gap-2 ml-4">
+                                    {/* VERIFY BUTTON */}
                                     {s.suggested_move && !s.isVerified && (
-                                        <button onClick={() => handleVerifyMove(s.id)} className={`p-2 rounded transition-colors ${verifyingSuggestionId === s.id ? 'bg-purple-200 text-purple-800' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'}`} title="Check more papers to verify" disabled={!!verifyingSuggestionId}>
+                                        <button 
+                                          onClick={() => handleVerifyMove(s.id)} 
+                                          className={`p-2 rounded transition-colors ${verifyingSuggestionId === s.id ? 'bg-purple-200 text-purple-800' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'}`}
+                                          title="Check more papers to verify"
+                                          disabled={!!verifyingSuggestionId}
+                                        >
                                           {verifyingSuggestionId === s.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <FileSearch className="h-4 w-4"/>}
                                         </button>
                                     )}
+                                    
+                                    {/* REVERSE BUTTON - NOW FOR BOTH MOVE AND CATEGORY MERGE */}
                                     {(s.suggested_category_merge || s.suggested_move) && (
-                                        <button onClick={() => handleReverseSuggestion(s.id)} className={`p-2 rounded transition-colors ${verifyingSuggestionId === s.id ? 'bg-indigo-200 text-indigo-800' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'}`} title="Reverse direction / Merge instead" disabled={!!verifyingSuggestionId}>
+                                        <button 
+                                          onClick={() => handleReverseSuggestion(s.id)}
+                                          className={`p-2 rounded transition-colors ${verifyingSuggestionId === s.id ? 'bg-indigo-200 text-indigo-800' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'}`}
+                                          title="Reverse direction / Merge instead"
+                                          disabled={!!verifyingSuggestionId}
+                                        >
                                           {verifyingSuggestionId === s.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <ArrowLeftRight className="h-4 w-4"/>}
                                         </button>
                                     )}
+
                                     <button onClick={() => handleAcceptSuggestion(s.id)} className="p-2 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors" title="Accept Suggestion"><Check className="h-4 w-4"/></button>
                                     <button onClick={() => handleRejectSuggestion(s.id)} className="p-2 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors" title="Reject (Don't ask again)"><X className="h-4 w-4"/></button>
                                 </div>
@@ -1971,6 +2604,7 @@ const App = () => {
                             <div onClick={() => setExpandedThemes(p => ({...p, [key]: !p[key]}))} className="flex items-center gap-2 cursor-pointer flex-1">
                               {!isThemeLocked && <GripVertical className="h-3 w-3 text-slate-300 cursor-grab" />}
                               <Tag className={`h-3 w-3 ${isThemeLocked ? 'text-orange-400' : 'text-slate-400'}`} />
+                              
                               {editingItem && editingItem.id === `theme:${cat}|||${theme}` ? (
                                 <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                                     <input 
@@ -1989,6 +2623,7 @@ const App = () => {
                                     <button onClick={(e) => { e.stopPropagation(); startEditing('theme', theme, cat); }} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-500 transition-opacity p-1"><Edit2 className="h-3 w-3"/></button>
                                 </span>
                               )}
+
                               <button onClick={(e) => toggleLock(e, 'theme', `${cat}|||${theme}`)} className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-200 ml-1" title={isThemeLocked ? "Unlock Sub-Theme" : "Lock Sub-Theme"}>
                                   {isThemeLocked ? <Lock className="h-3 w-3 text-orange-500" /> : <Unlock className="h-3 w-3" />}
                               </button>
@@ -2024,7 +2659,9 @@ const App = () => {
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900 font-sans">
       <QuotaModal isOpen={quotaErrorOpen} onClose={() => setQuotaErrorOpen(false)} exportFn={exportStateJSON} />
       <ManualFixModal isOpen={!!manualFixState} text={manualFixState?.text || ''} onSave={handleManualFixSave} onCancel={() => { setManualFixState(null); setIsProcessing(false); }} />
-      <SynthesisModal isOpen={synthesisModalOpen} onClose={() => setSynthesisModalOpen(false)} themeKey={synthesisThemeKey} isSynthesizing={isSynthesizing} retryStatus={retryStatus} result={synthesisResult} bulkData={bulkSynthesisData} />
+      <SynthesisModal isOpen={synthesisModalOpen} onClose={() => setSynthesisModalOpen(false)} themeKey={synthesisThemeKey} isSynthesizing={isSynthesizing} retryStatus={retryStatus} result={synthesisResult} />
+      {/* --- ADDED: Bulk Synthesis Modal --- */}
+      <BulkSynthesisModal isOpen={bulkModalOpen} onClose={() => setBulkModalOpen(false)} results={bulkResults} type={bulkType} />
       
       <header className="bg-emerald-900 text-white p-4 shadow-md flex justify-between items-center z-10">
         <div className="flex items-center gap-3"><BookOpen className="h-6 w-6 text-emerald-300" /><div><h1 className="text-xl font-bold tracking-tight">EcoSynthesisAI</h1><p className="text-xs text-emerald-300 opacity-80">Systematic Review Tool</p></div></div>
@@ -2039,22 +2676,31 @@ const App = () => {
             <div className="mb-4 p-4 bg-slate-100 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-4">
               <div><label className="block text-xs font-bold text-slate-500 uppercase">API Key</label><input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Paste Google AI Studio Key..." className="w-full p-2 text-sm border rounded" /></div>
               <div><label className="block text-xs font-bold text-slate-500 uppercase">Topic</label><textarea value={reviewTopic} onChange={e=>setReviewTopic(e.target.value)} placeholder="e.g. Urbanization effects on birds" rows={2} className="w-full p-2 text-sm border rounded resize-none" /></div>
+              
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">AI Model Selection</label>
                 <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); }} className="w-full p-2 text-sm border border-slate-300 rounded mb-2 bg-white">
                   {MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
+                
+                {/* BLUE INFO BOX RESTORED */}
                 <div className="mt-2 bg-blue-50 p-2 rounded border border-blue-100">
-                  <p className="text-xs text-blue-800 font-medium flex items-center gap-1"><Cpu className="h-3 w-3" /> {MODELS.find(m => m.id === selectedModel)?.name}</p>
-                  <p className="text-[10px] text-blue-600 mt-1">{MODELS.find(m => m.id === selectedModel)?.desc}</p>
+                  <p className="text-xs text-blue-800 font-medium flex items-center gap-1">
+                    <Cpu className="h-3 w-3" /> {MODELS.find(m => m.id === selectedModel)?.name}
+                  </p>
+                  <p className="text-[10px] text-blue-600 mt-1">
+                    {MODELS.find(m => m.id === selectedModel)?.desc}
+                  </p>
                 </div>
               </div>
+              
               <div>
                   <label className="flex items-center gap-2 cursor-pointer mt-2">
                       <input type="checkbox" checked={!enableSpecies} onChange={() => setEnableSpecies(!enableSpecies)} className="rounded text-emerald-600 focus:ring-emerald-500" />
                       <span className="text-xs font-medium text-slate-600">My field does not examine species</span>
                   </label>
               </div>
+
               <div className='flex gap-2 pt-2 border-t border-slate-200'>
                  <button onClick={() => fileInputRef.current?.click()} className="flex-1 flex justify-center items-center py-2 bg-blue-100 text-blue-700 rounded text-xs font-bold cursor-pointer hover:bg-blue-200"><Upload className="h-3 w-3 inline mr-1" /> Import</button>
                  <input ref={fileInputRef} type="file" accept=".json" onChange={importStateJSON} className="hidden" />
@@ -2079,28 +2725,62 @@ const App = () => {
                 <button onClick={() => setViewMode('folder')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='folder'?'bg-white shadow-sm':'text-slate-500'}`}><List className="h-4 w-4"/> List</button>
                 <button onClick={() => setViewMode('flow')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='flow'?'bg-white shadow-sm text-blue-600':'text-slate-500'}`}><GitGraph className="h-4 w-4"/> Flow</button>
                 <button onClick={() => setViewMode('timeline')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='timeline'?'bg-white shadow-sm text-purple-600':'text-slate-500'}`}><BarChart2 className="h-4 w-4"/> Trends</button>
+                {/* SPLIT ANALYSIS TABS */}
                 <button onClick={() => setViewMode('gap_analysis')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='gap_analysis'?'bg-white shadow-sm text-emerald-600':'text-slate-500'}`}><Grid3X3 className="h-4 w-4"/> Gaps</button>
                 <button onClick={() => setViewMode('geo_analysis')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='geo_analysis'?'bg-white shadow-sm text-amber-600':'text-slate-500'}`}><Globe className="h-4 w-4"/> Demographics</button>
+                
                 <button onClick={() => setViewMode('chat')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='chat'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}><MessageSquare className="h-4 w-4"/> Chat</button>
              </div>
              
              <div className='flex items-center gap-2'>
-                {/* Updated Bulk Buttons with new handlers and labels */}
-                <button onClick={handleBulkSubThemeSynthesis} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-yellow-50 text-yellow-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <Zap className="h-3 w-3 fill-yellow-700"/>} Synthesize All Sub-Themes</button>
-                <button onClick={handleBulkMainCategorySynthesis} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-orange-50 text-orange-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <FileText className="h-3 w-3 fill-orange-700"/>} Synthesize All Main Categories</button>
+                {/* --- UPDATED: Renamed Buttons and New Modal Logic --- */}
+                <button onClick={handleOverallSynthesisAndExport} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-yellow-50 text-yellow-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <Zap className="h-3 w-3 fill-yellow-700"/>} Synthesize Sub-Themes</button>
+                <button onClick={handleBulkMainSynthesis} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-orange-50 text-orange-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <FileText className="h-3 w-3 fill-orange-700"/>} Synthesize Main Categories</button>
                 
+                {/* Theme Consolidation Button */}
                 <button 
                   onClick={handleConsolidateThemes}
                   disabled={papers.length === 0 || isConsolidating || !apiKey}
                   title={!apiKey ? "API Key required for theme merging." : papers.length === 0 ? "Add papers first." : "Run AI analysis to merge similar sub-themes or confirm distinctness."}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${papers.length === 0 || isConsolidating || !apiKey ? 'text-slate-400 border-slate-100 cursor-not-allowed' : isConsolidationComplete ? 'text-green-700 border-green-200 bg-green-50 hover:bg-green-100' : 'text-blue-700 border-blue-200 bg-blue-50 hover:bg-blue-100'}`}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                    ${papers.length === 0 || isConsolidating || !apiKey
+                      ? 'text-slate-400 border-slate-100 cursor-not-allowed' 
+                      : isConsolidationComplete
+                        ? 'text-green-700 border-green-200 bg-green-50 hover:bg-green-100'
+                        : 'text-blue-700 border-blue-200 bg-blue-50 hover:bg-blue-100'
+                      }`}
                 >
-                  {isConsolidating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Layers className="h-3 w-3" />}
-                  {isConsolidating ? 'Analyzing...' : isConsolidationComplete ? 'Re-check Structure' : 'Suggest Merges'}
+                  {isConsolidating ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Layers className="h-3 w-3" />
+                  )}
+                  {isConsolidating 
+                    ? 'Analyzing...' 
+                    : isConsolidationComplete
+                      ? 'Re-check Structure'
+                      : 'Suggest Merges'}
                 </button>
 
-                <button onClick={handleClearAll} className="flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-100 transition-colors" title="Reset all data and inputs."><Trash2 className="h-3 w-3" /> Reset</button>
-                <button onClick={exportToCSV} disabled={papers.length === 0} className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${papers.length === 0 ? 'text-slate-300 border-slate-100 cursor-not-allowed' : 'text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'}`}><Download className="h-3 w-3" /> Export CSV</button>
+                <button 
+                  onClick={handleClearAll}
+                  className="flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 rounded border border-transparent hover:border-red-100 transition-colors"
+                  title="Reset all data and inputs."
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Reset
+                </button>
+                <button 
+                  onClick={exportToCSV}
+                  disabled={papers.length === 0}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-bold transition-colors border
+                    ${papers.length === 0 
+                      ? 'text-slate-300 border-slate-100 cursor-not-allowed' 
+                      : 'text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'}`}
+                >
+                  <Download className="h-3 w-3" />
+                  Export CSV
+                </button>
              </div>
           </div>
 
@@ -2111,6 +2791,7 @@ const App = () => {
                 <div className="h-full flex flex-col">
                     <div className="mb-4 text-xs text-slate-500 flex justify-between items-center">
                         <span>Click lines to filter papers below. Zoom to explore dense networks.</span>
+                        {/* Removed the 'Manuscript Ready' badge */}
                     </div>
                     <div className="flex-1 min-h-[500px]">
                         <FlowDiagram 
