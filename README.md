@@ -6,7 +6,7 @@ EcoSynthesisAI transforms the overwhelming chaos of a large-scale systematic rev
 
 Although it was originally designed to assist with Ecology reviews, the tool is based entirely on Google's AI models and therefore should be applicable to any field of science.
 
-The tool is active at [this link](https://aeiche01.github.io/EcoSynthesisAI/).
+The tool is active at [this link](https://aeiche01.github.io/EcoSynthesisAI/). A peer reviewed paper for this tool is currently in review.
 
 ## Why use EcoSynthesisAI?
 
