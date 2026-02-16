@@ -4,7 +4,7 @@ EcoSynthesisAI transforms the overwhelming chaos of a large-scale systematic rev
 
 > **Note:** EcoSynthesisAI does *not* perform web searches or fetch papers. It assumes the user already has a curated list of papers (e.g., from Web of Science) and needs help organizing and understanding them.
 
-Although it was originally designed to assist with Ecology reviews, the tool is based entirely on Google's AI models and therefore should be applicable to any field of science.
+Although it was originally designed to assist with Ecology reviews, the tool is based entirely on Google's AI models and therefore should be applicable to any field of science. Note that we have not currently tested it on fields unrelated to Ecology.
 
 The tool is active at [this link](https://aeiche01.github.io/EcoSynthesisAI/). A peer reviewed paper for this tool is currently in review.
 
@@ -67,7 +67,7 @@ As of December 2025, the free tier works well with the Gemma model while Gemini 
   Paste your raw list of papers into the large text box.
 
   **Format Requirements:**
-  - Accepts text copied from Excel, CSV, or plain text
+  - Accepts plain text.
   - Should include Title, Abstract, Authors, Journal, and Year. Generally organized like so:
   
     > *Authors (Year). Title. Journal*  
