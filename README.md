@@ -8,6 +8,8 @@ Although it was originally designed to assist with Ecology reviews, the tool is 
 
 The tool is active at [this link](https://aeiche01.github.io/EcoSynthesisAI/). A peer reviewed paper for this tool is currently in review.
 
+**UPDATE: Google is retiring the 2.5 model version (as well as Gemma 3). We have updated Gemini in this tool to the 3.0 version and added the 3.1 Flash Light version. Flash Lite can be used instead of Gemma 3 once Gemma 3 is retired on April 10, 2026. We are working on getting Gemma 4 included in this tool.**
+
 ## Why use EcoSynthesisAI?
 
 Conducting a large-scale systematic review often requires a team to hold thousands of disparate findings in their heads simultaneously to find patterns. EcoSynthesisAI solves this "cognitive bottleneck" by turning a flat list of papers into a structured workspace.
