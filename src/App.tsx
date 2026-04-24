@@ -50,9 +50,15 @@ import {
 // --- Constants & Models ---
 const MODELS = [
   { 
-    id: "gemini-2.5-flash", 
-    name: "Gemini 2.5 Flash (Best Quality)", 
+    id: "gemini-3-flash-preview", 
+    name: "Gemini 3 Flash (Best Quality)", 
     desc: "Highest reasoning capability. Strict daily limit (~20/day on free tier). Use this for the final Synthesis step where quality counts.",
+    type: "gemini"
+  },
+  { 
+    id: "gemini-3.1-flash-lite-preview", 
+    name: "Gemini 3.1 Flash Lite (High Quota)", 
+    desc: "Generous daily limits. Good balance of speed and quality. Best for the initial bulk Sorting/Extraction of papers.",
     type: "gemini"
   },
   { 
@@ -282,7 +288,7 @@ function createBatches(text: string, maxChunkSize: number): string[] {
 }
 
 function safeJsonParse<T>(jsonString: string): { data: T, wasTruncated: boolean } {
-  let clean = jsonString.replace(/```json/g, '').replace(/```/g, '').trim();
+  let clean = jsonString.replace(/\`\`\`json/g, '').replace(/\`\`\`/g, '').trim();
   let wasTruncated = false;
   
   try {
@@ -2670,7 +2676,7 @@ const App = () => {
 
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
         <div className="w-full md:w-1/3 min-w-[350px] flex flex-col border-r border-slate-200 bg-white p-6 shadow-sm z-0">
-           {showRateLimitNotice && <div className="hidden md:flex mb-4 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800"><div className="flex-1"><p className="font-bold flex items-center gap-1"><Info className="h-3 w-3"/> API Rate Limits</p><ul className="list-disc pl-4 mt-1 space-y-1"><li>Free Tier has restrictive limits on Gemini 2.5.</li><li>If stuck, switch model to Gemma. Do not combine AI models for extraction step.</li></ul></div><button onClick={() => setShowRateLimitNotice(false)} className="text-amber-600 hover:text-amber-900 self-start ml-2"><X className="h-3 w-3" /></button></div>}
+           {showRateLimitNotice && <div className="hidden md:flex mb-4 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800"><div className="flex-1"><p className="font-bold flex items-center gap-1"><Info className="h-3 w-3"/> API Rate Limits</p><ul className="list-disc pl-4 mt-1 space-y-1"><li>Free Tier has restrictive limits on Gemini 3 Flash.</li><li>If stuck, switch to Gemini 3.1 Flash Lite or Gemma. Do not combine AI models for extraction step.</li></ul></div><button onClick={() => setShowRateLimitNotice(false)} className="text-amber-600 hover:text-amber-900 self-start ml-2"><X className="h-3 w-3" /></button></div>}
 
            {showSettings && (
             <div className="mb-4 p-4 bg-slate-100 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-4">
