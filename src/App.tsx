@@ -58,13 +58,13 @@ const MODELS = [
   { 
     id: "gemini-3.1-flash-lite-preview", 
     name: "Gemini 3.1 Flash Lite (High Quota)", 
-    desc: "Generous daily limits. Good balance of speed and quality. Best for the initial bulk Sorting/Extraction of papers.",
+    desc: "Generous daily limits. Good balance of speed and quality. Highly recommended for the initial bulk Sorting/Extraction of papers.",
     type: "gemini"
   },
   { 
     id: "gemma-3-27b-it", 
-    name: "Gemma 3 27b (High Quota)", 
-    desc: "Generous daily limits on free tier. Best for the initial bulk Sorting/Extraction of papers.",
+    name: "Gemma (Unavailable)", 
+    desc: "Gemma 3 has been retired. We are working on integrating Gemma 4. Please use Gemini 3.1 Flash Lite in the meantime.",
     type: "gemma"
   }
 ];
@@ -142,7 +142,7 @@ interface AuditResult {
 interface ConsolidationSuggestion {
   id: string; 
   main_category: string;
-  isVerified?: boolean; // New flag for verification status
+  isVerified?: boolean; 
   suggested_merge?: {
     themes_to_combine: string[];
     new_theme_name: string;
@@ -220,7 +220,7 @@ interface SynthesisModalProps {
 interface DragItem {
   type: 'cat' | 'theme';
   name: string;
-  parentCat?: string; // Only for themes
+  parentCat?: string; 
 }
 
 // --- Helper Functions ---
@@ -270,15 +270,12 @@ function createBatches(text: string, maxChunkSize: number): string[] {
       break;
     }
     
-    // 1. Try to split at Double Newline (Paragraph break) to avoid cutting Citation-Abstract pairs
     let cutIndex = remaining.lastIndexOf('\n\n', maxChunkSize);
     
-    // 2. If no double newline, try standard newline
     if (cutIndex === -1) {
         cutIndex = remaining.lastIndexOf('\n', maxChunkSize);
     }
     
-    // 3. Last resort: Hard cut (very rare)
     if (cutIndex === -1) cutIndex = maxChunkSize;
 
     batches.push(remaining.slice(0, cutIndex));
@@ -351,7 +348,7 @@ async function fetchAI(
   apiKey: string, 
   systemPrompt: string, 
   userPrompt: string,
-  responseSchema: any = null // keeping signature compatibility
+  responseSchema: any = null
 ): Promise<any> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
   const isGemma = modelId.toLowerCase().includes('gemma');
@@ -403,7 +400,6 @@ async function fetchAI(
   return data;
 }
 
-// NEW: Helper to verify move suggestion with more papers
 async function verifyMoveWithGemini(
     theme: string,
     currentCat: string,
@@ -435,7 +431,6 @@ async function verifyMoveWithGemini(
     return parsed.data;
 }
 
-// NEW: Helper to generate reverse suggestion
 async function reverseSuggestionWithGemini(
     sourceCat: string,
     targetCat: string,
@@ -532,7 +527,6 @@ async function analyzeWithGemini(
       const isRetryable = error.name === "RetryableError" || error.message.includes("Overloaded");
       const isFatal = error.name === "QuotaExceededError" || error.name === "ApiKeyError";
       
-      // If we failed JSON parsing, we might want to rethrow to trigger manual fix
       if (error.message.includes("malformed data") || error.message.includes("JSON")) {
           throw error; 
       }
@@ -551,12 +545,11 @@ async function analyzeWithGemini(
   }
 }
 
-// RESTORED: Superior Audit Function for Automatic Finalization
 async function auditTaxonomyWithGemini(
   taxonomyList: string[],
   key: string,
   topic: string,
-  modelId: string, // Dynamic model ID
+  modelId: string, 
   onStatusUpdate: (msg: string) => void
 ): Promise<AuditResult> {
   const effectiveTopic = topic.trim() || "General Academic Research";
@@ -603,7 +596,6 @@ async function auditTaxonomyWithGemini(
   while (true) {
     try {
       onStatusUpdate(`Auditing Structure...`);
-      // Empty user prompt because the list is in the system prompt for better context adherence in Gemma
       const data = await fetchAI(modelId, key, systemPrompt, "Analyze and fix the taxonomy list above.", true);
       const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
       const parsed = safeJsonParse<AuditResult>(textResponse);
@@ -617,7 +609,6 @@ async function auditTaxonomyWithGemini(
   }
 }
 
-// NEW: Advanced Consolidation Logic for the Button
 async function consolidateThemesWithGemini(
   taxonomy: Taxonomy, 
   paperSamples: Record<string, string[]>,
@@ -706,7 +697,6 @@ async function consolidateThemesWithGemini(
       if ((error.name === "RetryableError" || !error.name.includes("Quota")) && retries < maxRetries) {
         retries++; await wait(3000); continue;
       }
-      // Return "no changes" on error to avoid crashing
       return { status: "no_changes", suggestions: [] };
     }
   }
@@ -717,7 +707,7 @@ async function optimizeStructureWithGemini(
   key: string,
   topic: string,
   modelId: string,
-  _enableSpecies: boolean, // unused variable prefix with _
+  _enableSpecies: boolean,
   onStatusUpdate: (msg: string) => void
 ): Promise<OptimizationResult> {
   const effectiveTopic = topic.trim() || "General Academic Research";
@@ -842,14 +832,12 @@ async function synthesizeSectionWithGemini(sectionTheme: string, papersData: any
 }
 
 async function askPaperChat(query: string, papers: Paper[], key: string, modelId: string): Promise<string> {
-  // Enhanced Keyword Extraction (excluding common stop words)
   const stopWords = new Set(['about', 'this', 'that', 'with', 'from', 'what', 'where', 'when', 'which', 'who', 'how', 'does', 'need', 'want', 'know', 'find', 'show', 'tell', 'papers', 'study', 'studies']);
   const keywords = query.toLowerCase()
     .replace(/[.,?/#!$%^&*;:{}=\-_`~()]/g, "")
     .split(/\s+/)
     .filter(w => w.length > 2 && !stopWords.has(w));
   
-  // 1. Calculate Global Context
   const totalPapers = papers.length;
   const categories = Array.from(new Set(papers.map(p => p.category))).sort();
   const drivers: Record<string, number> = {};
@@ -869,11 +857,9 @@ async function askPaperChat(query: string, papers: Paper[], key: string, modelId
   const topLocations = Object.entries(locations).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
   const topSpecies = Object.entries(species).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(x => `${x[0]} (${x[1]})`).join(', ');
 
-  // 2. RAG Context (Relevance Search with improved keyword logic)
   const relevantPapers = papers.filter(p => {
       if (keywords.length === 0) return false;
       const text = (p.title + " " + p.keyFinding + " " + p.abstractSnippet + " " + p.species + " " + p.location).toLowerCase();
-      // Require at least one non-stopword keyword match
       return keywords.some(k => text.includes(k));
   }).slice(0, 15);
   
@@ -906,6 +892,63 @@ async function askPaperChat(query: string, papers: Paper[], key: string, modelId
 }
 
 // --- SUB-COMPONENTS ---
+
+// NEW: Update Notice Modal
+const UpdateNoticeModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-slate-900 bg-opacity-70 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl transform transition-all duration-300 scale-100 opacity-100 flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-200 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-bold text-emerald-700 flex items-center gap-2">
+            <Info className="h-6 w-6 text-emerald-500" />
+            Important Update: AI Models
+          </h3>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors">
+            <X className='h-5 w-5' />
+          </button>
+        </div>
+        <div className="p-6 overflow-y-auto space-y-4 text-slate-700">
+          <p>Welcome to the updated EcoSynthesisAI! We have made some important changes to the models powering this tool.</p>
+          
+          <div className="bg-blue-50 border border-blue-200 rounded p-4">
+            <h4 className="font-bold text-blue-800 flex items-center gap-2 mb-2">
+              <Zap className="h-5 w-5" /> Gemini 3 Integration
+            </h4>
+            <p className="text-sm text-blue-900">
+              We have officially transitioned from Gemini 2.5 to the new Gemini 3 models for enhanced reasoning and synthesis capabilities.
+            </p>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded p-4">
+            <h4 className="font-bold text-amber-800 flex items-center gap-2 mb-2">
+              <AlertCircle className="h-5 w-5" /> Gemma Status
+            </h4>
+            <p className="text-sm text-amber-900">
+              The original tool relied on Gemma 3 for bulk sorting tasks. However, Gemma 3 has been retired. We are working diligently to implement its replacement, Gemma 4, but it is currently experiencing technical issues. You will still see "Gemma" in the model list, but it is disabled.
+            </p>
+          </div>
+
+          <div className="bg-emerald-50 border border-emerald-200 rounded p-4">
+            <h4 className="font-bold text-emerald-800 flex items-center gap-2 mb-2">
+              <Check className="h-5 w-5" /> Our Recommendation
+            </h4>
+            <p className="text-sm text-emerald-900">
+              In the meantime, we highly recommend selecting <strong>Gemini 3.1 Flash Lite</strong> from the dropdown settings. It offers comparable performance to Gemini 2.5 and features a very high daily quota, making it perfect for your bulk paper extractions.
+            </p>
+          </div>
+        </div>
+        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end rounded-b-xl">
+          <button onClick={onClose} className="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 font-bold">
+            Got it, thanks!
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
 const SynthesisModal: React.FC<SynthesisModalProps> = ({ isOpen, onClose, themeKey, isSynthesizing, retryStatus, result }) => {
   if (!isOpen) return null;
   const [category, theme] = themeKey.split('-');
@@ -927,7 +970,6 @@ const SynthesisModal: React.FC<SynthesisModalProps> = ({ isOpen, onClose, themeK
   );
 };
 
-// NEW: Bulk Synthesis Modal (Pop-up before export)
 interface BulkSynthesisModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -1006,7 +1048,6 @@ const BulkSynthesisModal: React.FC<BulkSynthesisModalProps> = ({ isOpen, onClose
   );
 };
 
-// NEW: Manual Fix Modal
 const ManualFixModal = ({ isOpen, text, onSave, onCancel }: { isOpen: boolean, text: string, onSave: (newText: string) => void, onCancel: () => void }) => {
   const [fixedText, setFixedText] = useState(text);
   useEffect(() => { setFixedText(text); }, [text]);
@@ -1048,7 +1089,7 @@ const QuotaModal = ({ isOpen, onClose, exportFn }: { isOpen: boolean, onClose: (
         <p className="text-slate-700 mb-4">Google's API has blocked further requests. This usually means you have hit the <strong>free tier daily limit</strong> for the selected model.</p>
         <div className="bg-slate-100 p-4 rounded mb-4 text-sm text-slate-600">
           <p className="font-semibold mb-2">Recommended Actions:</p>
-          <ul className="list-disc pl-5 space-y-1"><li><strong>Switch Models:</strong> Use 'Gemma 3' (higher limits) for sorting.</li><li><strong>Export Now:</strong> Save your JSON state and continue tomorrow.</li><li><strong>Wait:</strong> Quotas typically reset at midnight Pacific Time.</li></ul>
+          <ul className="list-disc pl-5 space-y-1"><li><strong>Switch Models:</strong> Use 'Gemini 3.1 Flash Lite' for higher limits.</li><li><strong>Export Now:</strong> Save your JSON state and continue tomorrow.</li><li><strong>Wait:</strong> Quotas typically reset at midnight Pacific Time.</li></ul>
         </div>
         <div className="flex gap-3 justify-end"><button onClick={onClose} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded">Close</button><button onClick={() => { exportFn(); onClose(); }} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 flex items-center gap-2"><Download className="h-4 w-4" /> Export Progress</button></div>
       </div>
@@ -1064,7 +1105,6 @@ interface FlowDiagramProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
-  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
@@ -1081,7 +1121,6 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
   const data = useMemo(() => {
     const drivers: Record<string, number> = {}; const responses: Record<string, number> = {}; const links: Record<string, { count: number, papers: Paper[], effectCounts: Record<string, number> }> = {};
     papers.forEach(p => {
-      // Use Group fields if the toggle is active, otherwise use raw fields.
       const d = isDriverGrouped ? (p.driverGroup || p.driver || "Unknown") : (p.driver || "Unknown");
       const r = isResponseGrouped ? (p.responseGroup || p.response || "Unknown") : (p.response || "Unknown");
       if (driverFilter && !d.toLowerCase().includes(driverFilter.toLowerCase())) return;
@@ -1124,7 +1163,6 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
       <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-white rounded-t-lg flex-wrap gap-2">
         <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-600 uppercase tracking-wider mr-2">Zoom:</span><button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300"><ZoomOut className="h-4 w-4 text-slate-600"/></button><span className="text-xs w-8 text-center">{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><ZoomIn className="h-4 w-4 text-slate-600"/></button><button onClick={() => setZoom(1)} className="p-1 hover:bg-slate-100 rounded border border-slate-300 ml-1"><Maximize className="h-4 w-4 text-slate-600"/></button></div>
         <div className="flex items-center gap-2">
-           {/* GROUP TERMS BUTTON (LOCAL) */}
             <button 
               onClick={handleOptimizeTerms}
               disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
@@ -1150,9 +1188,7 @@ const FlowDiagram: React.FC<FlowDiagramProps> = ({ papers, onFilter, isDriverGro
                   ? 'Terms Grouped'
                   : 'Group Terms'}
             </button>
-            {/* DRIVER GROUP TOGGLE (New) */}
            <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
-           {/* RESPONSE GROUP TOGGLE (New) */}
            <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
           <div className="flex items-center bg-white border border-slate-300 rounded px-2 py-1 gap-2"><Search className="h-3 w-3 text-slate-400" /><input type="text" placeholder="Filter Drivers..." className="text-xs outline-none w-24" value={driverFilter} onChange={e => setDriverFilter(e.target.value)} /><div className="w-px h-3 bg-slate-300"></div><input type="text" placeholder="Filter Outcomes..." className="text-xs outline-none w-24" value={responseFilter} onChange={e => setResponseFilter(e.target.value)} /></div>
@@ -1182,13 +1218,11 @@ interface TemporalChartProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
-  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
 }
 
-// --- COMPONENT: Temporal Chart (Line Graph) ---
 const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const [metric, setMetric] = useState<'driver' | 'response'>('driver');
   const [categoryFilter, setCategoryFilter] = useState<string>('Top 5'); 
@@ -1199,7 +1233,6 @@ const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, 
     const minYear = years[0]; const maxYear = years[years.length - 1];
     const counts: Record<string, number> = {};
     papers.forEach(p => { 
-        // Use Grouped terms if the respective toggle is active
         const d = isDriverGrouped ? (p.driverGroup || p.driver) : p.driver;
         const r = isResponseGrouped ? (p.responseGroup || p.response) : p.response;
         const val = metric === 'driver' ? d : r; 
@@ -1234,7 +1267,6 @@ const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, 
         <div className="flex justify-between items-center mb-4 border-b border-slate-200 pb-3">
             <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><BarChart2 className="h-4 w-4"/> Trends Over Time</h3>
             <div className="flex items-center gap-3">
-                {/* GROUP TERMS BUTTON (LOCAL) */}
                 <button 
                   onClick={handleOptimizeTerms}
                   disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
@@ -1260,9 +1292,7 @@ const TemporalChart: React.FC<TemporalChartProps> = ({ papers, isDriverGrouped, 
                       ? 'Terms Grouped'
                       : 'Group Terms'}
                 </button>
-                 {/* DRIVER GROUP TOGGLE (New) */}
                  <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
-                 {/* RESPONSE GROUP TOGGLE (New) */}
                  <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1.5 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
                  <div className="flex bg-white rounded border border-slate-300 overflow-hidden">
@@ -1303,17 +1333,14 @@ interface GapHeatmapProps {
   setIsDriverGrouped: (val: (prev: boolean) => boolean) => void;
   setIsResponseGrouped: (val: (prev: boolean) => boolean) => void;
   isTermsNormalized: boolean;
-  // New props for the button:
   handleOptimizeTerms: () => Promise<void>;
   isConsolidating: boolean;
   apiKey: string;
 }
 
-// --- COMPONENT: Gap Heatmap ---
 const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResponseGrouped, setIsDriverGrouped, setIsResponseGrouped, isTermsNormalized, handleOptimizeTerms, isConsolidating, apiKey }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const data = useMemo(() => {
-    // Use Grouped terms if the respective toggle is active
     const drivers = Array.from(new Set(papers.map(p => isDriverGrouped ? (p.driverGroup || p.driver) : p.driver))).sort();
     const responses = Array.from(new Set(papers.map(p => isResponseGrouped ? (p.responseGroup || p.response) : p.response))).sort();
     
@@ -1340,7 +1367,6 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-bold text-slate-700 flex items-center gap-2"><Grid3X3 className="h-4 w-4"/> Research Gap Heatmap</h3>
         <div className="flex gap-2">
-            {/* GROUP TERMS BUTTON (LOCAL) */}
             <button 
               onClick={handleOptimizeTerms}
               disabled={papers.length === 0 || isConsolidating || !apiKey || isTermsNormalized}
@@ -1366,9 +1392,7 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
                   ? 'Terms Grouped'
                   : 'Group Terms'}
             </button>
-            {/* DRIVER GROUP TOGGLE (New) */}
             <button onClick={() => setIsDriverGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isDriverGrouped ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Driver Grouping">{isDriverGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Drivers</button>
-            {/* RESPONSE GROUP TOGGLE (New) */}
             <button onClick={() => setIsResponseGrouped(p => !p)} disabled={!isTermsNormalized} className={`flex gap-1 px-3 py-1 border rounded text-xs font-medium ${isResponseGrouped ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white text-slate-500 disabled:opacity-50'}`} title="Toggle Response Grouping">{isResponseGrouped ? <ToggleRight className="h-4 w-4"/> : <ToggleLeft className="h-4 w-4"/>} Group Outcomes</button>
 
             <button onClick={handleExportDataCSV} className="text-xs flex items-center gap-1 text-slate-600 hover:text-emerald-600 font-medium cursor-pointer"><Download className="h-3 w-3"/> Data</button>
@@ -1387,7 +1411,6 @@ const GapHeatmap: React.FC<GapHeatmapProps> = ({ papers, isDriverGrouped, isResp
   );
 };
 
-// --- COMPONENT: Geo/Species Chart (SVG) ---
 const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
   const locRef = useRef<SVGSVGElement | null>(null);
   const specRef = useRef<SVGSVGElement | null>(null);
@@ -1400,7 +1423,7 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
     return { topLocs, topSpecs };
   }, [papers]);
 
-  const barHeight = 25; const gap = 15; const textWidth = 140; // Widened text area
+  const barHeight = 25; const gap = 15; const textWidth = 140;
   const locHeight = Math.max(300, data.topLocs.length * (barHeight + gap) + 40);
   const specHeight = Math.max(300, data.topSpecs.length * (barHeight + gap) + 40);
   const width = 400; 
@@ -1413,7 +1436,6 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
       <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-700 flex items-center gap-2"><Globe className="h-4 w-4"/> Demographics</h3><div className="flex gap-2"><button onClick={handleExportDataCSV} className="text-xs text-slate-600 hover:text-blue-600 underline">Export Data</button></div></div>
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Locations */}
         <div>
            <div className="flex justify-between mb-2"><span className="text-xs font-bold text-blue-700 uppercase">Top Locations</span><button onClick={() => handleExport(locRef, 'locations')} className="text-xs text-blue-500 hover:underline">Save Image</button></div>
            <svg ref={locRef} width={width} height={locHeight} className="border border-slate-100 rounded bg-slate-50"><style>{`text { font-family: sans-serif; font-size: 13px; }`}</style>
@@ -1426,7 +1448,6 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
            </svg>
         </div>
 
-        {/* Species */}
         <div>
            <div className="flex justify-between mb-2"><span className="text-xs font-bold text-purple-700 uppercase">Top Taxa / Species</span><button onClick={() => handleExport(specRef, 'taxa')} className="text-xs text-purple-500 hover:underline">Save Image</button></div>
            <svg ref={specRef} width={width} height={specHeight} className="border border-slate-100 rounded bg-slate-50"><style>{`text { font-family: sans-serif; font-size: 13px; }`}</style>
@@ -1443,7 +1464,6 @@ const GeoSpeciesChart = ({ papers }: { papers: Paper[] }) => {
   );
 };
 
-// --- COMPONENT: Chat Panel ---
 const ChatPanel = ({ papers, apiKey, modelId }: { papers: Paper[], apiKey: string, modelId: string }) => {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<ChatMessage[]>([{ role: 'ai', text: 'Ask me anything about the extracted papers! (e.g., "Which studies focused on fire impacts in Canada?"). Note: this is an assistance feature only, and cannot be used as a replacement for scientific review. Do not draw conclusions from this chatbot alone.', timestamp: Date.now() }]);
@@ -1478,13 +1498,12 @@ const ChatPanel = ({ papers, apiKey, modelId }: { papers: Paper[], apiKey: strin
 
 const App = () => {
   useEffect(() => { 
-    // GA initialization logic can go here if needed
     console.log("GA Init"); 
   }, []);
   
   const [apiKey, setApiKey] = useState(''); 
   const [reviewTopic, setReviewTopic] = useState(''); 
-  const [selectedModel, setSelectedModel] = useState(MODELS[0].id); 
+  const [selectedModel, setSelectedModel] = useState(MODELS[1].id); // Changed default to Flash Lite
   const [inputText, setInputText] = useState('');
   const [papers, setPapers] = useState<Paper[]>([]);
   
@@ -1504,15 +1523,16 @@ const App = () => {
   const [quotaErrorOpen, setQuotaErrorOpen] = useState(false); 
   const [showRateLimitNotice, setShowRateLimitNotice] = useState(true);
   
+  // NEW: Added state for showing the initial update modal
+  const [showUpdateNotice, setShowUpdateNotice] = useState(true);
+  
   const stopSignal = useRef(false); 
   const [error, setError] = useState<string | null>(null);
   const [enableSpecies, setEnableSpecies] = useState(true); 
   const [isOptimized, setIsOptimized] = useState(false); 
   
-  // New States for Grouping Toggle
   const [isDriverGrouped, setIsDriverGrouped] = useState(false);
   const [isResponseGrouped, setIsResponseGrouped] = useState(false);
-  // NEW: Separate state for Terms Normalization status
   const [isTermsNormalized, setIsTermsNormalized] = useState(false);
   
   const [consolidationSuggestions, setConsolidationSuggestions] = useState<ConsolidationSuggestion[] | null>(null);
@@ -1526,15 +1546,13 @@ const App = () => {
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [expandedThemes, setExpandedThemes] = useState<Record<string, boolean>>({});
   const [showSettings, setShowSettings] = useState(true);
-  const [lockedItems, setLockedItems] = useState<string[]>([]); // Format: "cat:Name" or "theme:Cat|||Name"
+  const [lockedItems, setLockedItems] = useState<string[]>([]); 
 
   const [editingItem, setEditingItem] = useState<{ id: string, type: 'cat' | 'theme', originalName: string, parentCat?: string, value: string } | null>(null);
   
-  // DRAG & DROP STATE
   const [draggedItem, setDraggedItem] = useState<DragItem | null>(null);
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
 
-  // BULK SYNTHESIS STATES
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
   const [bulkResults, setBulkResults] = useState<any[] | null>(null);
   const [bulkType, setBulkType] = useState<'sub' | 'main'>('sub');
@@ -1576,7 +1594,6 @@ const App = () => {
         return p;
     }));
     
-    // Migrate locks if necessary
     setLockedItems(prev => {
         const oldKey = type === 'cat' ? `cat:${originalName}` : `theme:${parentCat}|||${originalName}`;
         const newKey = type === 'cat' ? `cat:${trimmed}` : `theme:${parentCat}|||${trimmed}`;
@@ -1590,15 +1607,14 @@ const App = () => {
     setIsOptimized(true); 
   };
   
-  // DRAG HANDLERS
   const handleDragStart = (e: React.DragEvent, item: DragItem) => {
       e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', JSON.stringify(item)); // Fallback
+      e.dataTransfer.setData('text/plain', JSON.stringify(item));
       setDraggedItem(item);
   };
 
   const handleDragOver = (e: React.DragEvent, targetId: string) => {
-      e.preventDefault(); // Allow drop
+      e.preventDefault(); 
       setDragOverTarget(targetId);
   };
   
@@ -1612,17 +1628,11 @@ const App = () => {
       
       if (!draggedItem) return;
 
-      // Logic:
-      // 1. Theme -> Category (Move)
-      // 2. Theme -> Theme (Merge)
-      // 3. Category -> Category (Merge)
-
       let newPapers = [...papers];
       let changeMade = false;
 
-      // CASE 1: Drag Theme -> Category (Move to that category)
       if (draggedItem.type === 'theme' && target.type === 'cat') {
-          if (draggedItem.parentCat === target.name) return; // Dropped on own parent
+          if (draggedItem.parentCat === target.name) return; 
           
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.parentCat && p.theme === draggedItem.name) {
@@ -1632,9 +1642,8 @@ const App = () => {
           });
           changeMade = true;
       }
-      // CASE 2: Drag Theme -> Theme (Merge into target theme)
       else if (draggedItem.type === 'theme' && target.type === 'theme') {
-          if (draggedItem.name === target.name && draggedItem.parentCat === target.parentCat) return; // Dropped on self
+          if (draggedItem.name === target.name && draggedItem.parentCat === target.parentCat) return;
           
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.parentCat && p.theme === draggedItem.name) {
@@ -1644,9 +1653,8 @@ const App = () => {
           });
           changeMade = true;
       }
-      // CASE 3: Drag Category -> Category (Merge into target category)
       else if (draggedItem.type === 'cat' && target.type === 'cat') {
-          if (draggedItem.name === target.name) return; // Dropped on self
+          if (draggedItem.name === target.name) return;
           
           newPapers = newPapers.map(p => {
               if (p.category === draggedItem.name) {
@@ -1688,31 +1696,25 @@ const App = () => {
                 if (move) {
                     return {
                         ...p,
-                        // Normalize primary fields (Driver/Response/Location/Species)
                         driver: move.new_driver || p.driver,
                         response: move.new_response || p.response,
                         location: move.new_location || p.location,
                         species: move.new_species || p.species,
-                        
-                        // Populate grouping fields with the new groups
                         driverGroup: move.new_driver_group || (move.new_driver || p.driver),
                         responseGroup: move.new_response_group || (move.new_response || p.response),
-                        
-                        // Update Category/Theme (often suggested for normalization)
                         category: move.new_category || p.category,
                         theme: move.new_theme || p.theme,
                     };
                 }
                 return p;
             }));
-            setIsTermsNormalized(true); // Only set separate normalization state
+            setIsTermsNormalized(true); 
             setError(`✅ Metadata optimization complete. Normalized ${optimization.moves.length} fields.`);
         } else {
             setIsTermsNormalized(true); 
             setError("✅ Metadata optimization complete. No significant field changes suggested.");
         }
 
-        // After initial optimization, set both toggles to grouped state to reflect the refined data immediately.
         setIsDriverGrouped(true);
         setIsResponseGrouped(true);
 
@@ -1733,7 +1735,6 @@ const App = () => {
     setIsConsolidationComplete(false); 
     stopSignal.current = false;
     
-    // Clean Input
     const rawText = resumeText || inputText;
     const cleanedText = cleanRawText(rawText);
     const textBatches = createBatches(cleanedText, 25000); 
@@ -1823,19 +1824,15 @@ const App = () => {
         await wait(2000);
       }
       
-      // AUTO-AUDIT LOGIC ADDED HERE
       if (!stopSignal.current && accumulatedPapers.length > 0) {
         setRetryStatus("Finalizing: Auditing Taxonomy...");
         
-        // 1. Generate unique "Category ||| Theme" list
         const uniquePairs = new Set<string>();
         accumulatedPapers.forEach(p => uniquePairs.add(`${p.category} ||| ${p.theme}`));
         const taxonomyList = Array.from(uniquePairs);
 
-        // 2. Call the superior structural auditor
         const audit = await auditTaxonomyWithGemini(taxonomyList, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(msg));
         
-        // 3. Apply fixes
         let finalPapers = accumulatedPapers;
         if (audit && audit.fixes && audit.fixes.length > 0) {
            finalPapers = accumulatedPapers.map(p => { 
@@ -1905,7 +1902,7 @@ const App = () => {
                   species: p.study_species || "Unspecified",
                   keyFinding: p.key_finding, 
                   impactKeywords: p.impact_keywords, 
-                  batchId: batchCount + 1, // Use the next batch ID
+                  batchId: batchCount + 1, 
                   authors: p.authors, 
                   year: p.year, 
                   journal: p.journal, 
@@ -1913,7 +1910,7 @@ const App = () => {
                   modelUsed: activeModelId
             }));
             setPapers(prev => [...prev, ...newPapers]);
-            setBatchCount(prev => prev + 1); // Increment batch count
+            setBatchCount(prev => prev + 1); 
             
             handleProcessAll(resumeIndex + 1); 
         })
@@ -1926,14 +1923,12 @@ const App = () => {
 
   const handleClearAll = () => { setPapers([]); setBatchCount(0); setInputText(''); setError(null); setConsolidationSuggestions(null); setIsConsolidationComplete(false); setFilteredPapers(null); setIsOptimized(false); setIsTermsNormalized(false); setRejectedSuggestions([]); setLockedItems([]); setIsDriverGrouped(false); setIsResponseGrouped(false); };
   
-  // NEW: Accept Suggestion Handler
   const handleAcceptSuggestion = (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
 
       let newPapers = [...papers];
       
-      // 1. Apply MERGE
       if (suggestion.suggested_merge) {
           const { themes_to_combine, new_theme_name } = suggestion.suggested_merge;
           newPapers = newPapers.map(p => {
@@ -1944,7 +1939,6 @@ const App = () => {
           });
       }
 
-      // 2. Apply MOVE
       if (suggestion.suggested_move) {
           const { theme, current_category, target_category } = suggestion.suggested_move;
           newPapers = newPapers.map(p => {
@@ -1955,7 +1949,6 @@ const App = () => {
           });
       }
 
-      // 3. Apply CATEGORY MERGE (and clean up zombie suggestions)
       if (suggestion.suggested_category_merge) {
           const { source_category, target_category } = suggestion.suggested_category_merge;
           newPapers = newPapers.map(p => {
@@ -1965,20 +1958,16 @@ const App = () => {
               return p;
           });
 
-          // UPDATE PENDING SUGGESTIONS to reflect the category merge
           if (consolidationSuggestions) {
              const updatedSuggestions = consolidationSuggestions.map(s => {
-                  if (s.id === suggestionId) return s; // Will be removed anyway
+                  if (s.id === suggestionId) return s; 
 
-                  // If another suggestion was inside the merged category, update it
                   if (s.main_category === source_category) {
                       return { ...s, main_category: target_category };
                   }
-                  // Update moves FROM the merged category
                   if (s.suggested_move && s.suggested_move.current_category === source_category) {
                       return { ...s, suggested_move: { ...s.suggested_move, current_category: target_category } };
                   }
-                  // Update moves TO the merged category
                   if (s.suggested_move && s.suggested_move.target_category === source_category) {
                       return { ...s, suggested_move: { ...s.suggested_move, target_category: target_category } };
                   }
@@ -1988,11 +1977,9 @@ const App = () => {
           }
       }
 
-      // 4. Apply RENAME (and update pending suggestions)
       if (suggestion.suggested_rename) {
           const { current_name, new_name } = suggestion.suggested_rename;
           
-          // Apply to papers
           newPapers = newPapers.map(p => {
               if (p.category === current_name) {
                   return { ...p, category: new_name };
@@ -2000,27 +1987,22 @@ const App = () => {
               return p;
           });
 
-          // CRITICAL: Update other pending suggestions that reference the old name
           if (consolidationSuggestions) {
               const updatedSuggestions = consolidationSuggestions.map(s => {
-                  if (s.id === suggestionId) return s; // Ignore current one (will be removed)
+                  if (s.id === suggestionId) return s; 
                   
-                  // If another suggestion is inside the renamed category, update its main_category ref
                   if (s.main_category === current_name) {
                       return { ...s, main_category: new_name };
                   }
                   
-                  // If another suggestion is a move FROM the renamed category
                   if (s.suggested_move && s.suggested_move.current_category === current_name) {
                       return { ...s, suggested_move: { ...s.suggested_move, current_category: new_name } };
                   }
 
-                  // If another suggestion is a move TO the renamed category
                   if (s.suggested_move && s.suggested_move.target_category === current_name) {
                       return { ...s, suggested_move: { ...s.suggested_move, target_category: new_name } };
                   }
                   
-                  // If another suggestion is a MERGE of this category
                   if (s.suggested_category_merge && s.suggested_category_merge.source_category === current_name) {
                        return { ...s, suggested_category_merge: { ...s.suggested_category_merge, source_category: new_name } };
                   }
@@ -2035,13 +2017,11 @@ const App = () => {
       }
 
       setPapers(newPapers);
-      setIsOptimized(true); // Structure is optimized, but not terms
+      setIsOptimized(true); 
       
-      // Remove accepted suggestion from list
       setConsolidationSuggestions(prev => prev ? prev.filter(s => s.id !== suggestionId) : null);
   };
 
-  // NEW: Reject Suggestion Handler
   const handleRejectSuggestion = (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
@@ -2051,11 +2031,9 @@ const App = () => {
           setRejectedSuggestions(prev => [...prev, signature]);
       }
       
-      // Remove rejected suggestion from list
       setConsolidationSuggestions(prev => prev ? prev.filter(s => s.id !== suggestionId) : null);
   };
 
-  // NEW: Handle Reverse Suggestion Logic
   const handleReverseSuggestion = async (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion) return;
@@ -2064,12 +2042,10 @@ const App = () => {
       
       try {
           if (suggestion.suggested_category_merge) {
-              // CASE 1: Category Merge Reverse
               const { source_category, target_category } = suggestion.suggested_category_merge;
               const result = await reverseSuggestionWithGemini(source_category, target_category, apiKey, activeModelId, () => {});
               
               if (result && result.reason) {
-                  // Flip the suggestion in place
                   setConsolidationSuggestions(prev => prev?.map(s => {
                       if (s.id === suggestionId && s.suggested_category_merge) {
                           return {
@@ -2085,17 +2061,13 @@ const App = () => {
                   }) || null);
               }
           } else if (suggestion.suggested_move) {
-              // CASE 2: Move Sub-Section Reverse -> Convert to Main Category Merge
-              // User logic: "Move Sub A from Cat X to Cat Y" reversed means "Merge Cat Y into Cat X"
               const { current_category, target_category } = suggestion.suggested_move;
               
-              // We ask the AI to justify merging the Target into the Current (the reverse of moving the sub-theme out)
               const result = await reverseSuggestionWithGemini(target_category, current_category, apiKey, activeModelId, () => {});
 
               if (result && result.reason) {
                    setConsolidationSuggestions(prev => prev?.map(s => {
                       if (s.id === suggestionId) {
-                          // TRANSFORM into a Category Merge suggestion
                           return {
                               ...s,
                               suggested_move: null,
@@ -2118,7 +2090,6 @@ const App = () => {
       }
   };
 
-  // NEW: Handle Verify Move Logic
   const handleVerifyMove = async (suggestionId: string) => {
       const suggestion = consolidationSuggestions?.find(s => s.id === suggestionId);
       if (!suggestion || !suggestion.suggested_move) return;
@@ -2128,7 +2099,6 @@ const App = () => {
       try {
           const { theme, current_category, target_category } = suggestion.suggested_move;
           
-          // Get MORE papers for verification (up to 50)
           const themePapers = papers
             .filter(p => p.category === current_category && p.theme === theme)
             .slice(0, 50)
@@ -2139,12 +2109,9 @@ const App = () => {
           const verification = await verifyMoveWithGemini(theme, current_category, target_category, themePapers, apiKey, activeModelId, () => {});
           
           if (verification.isValid) {
-               // Mark as verified
                setConsolidationSuggestions(prev => prev?.map(s => s.id === suggestionId ? { ...s, isVerified: true } : s) || null);
           } else {
-               // Auto-reject / Remove from list if invalid
                setConsolidationSuggestions(prev => prev?.filter(s => s.id !== suggestionId) || null);
-               // Optional: Show a toast saying "Suggestion removed based on deep verification."
           }
       } catch (err) {
           console.error("Verification failed", err);
@@ -2157,7 +2124,6 @@ const App = () => {
       if (papers.length === 0 || !apiKey) return; 
       setIsConsolidating(true); 
       setConsolidationSuggestions(null);
-      // Reset complete flag to hide the "Refine" message while processing
       setIsConsolidationComplete(false); 
       setRetryStatus("Consolidating Taxonomy...");
       
@@ -2166,18 +2132,14 @@ const App = () => {
         const paperSamples: Record<string, string[]> = {};
 
         papers.forEach(p => { 
-          // Build Taxonomy Structure
           if (!taxonomy[p.category]) taxonomy[p.category] = []; 
           if (!taxonomy[p.category].includes(p.theme)) taxonomy[p.category].push(p.theme); 
           
-          // Build Paper Samples (Title only) to provide context for moves
-          // FIXED: Use a cleaner key for the prompt
           const sampleKey = `${p.category}: ${p.theme}`;
           if (!paperSamples[sampleKey]) paperSamples[sampleKey] = [];
           if (paperSamples[sampleKey].length < 10) paperSamples[sampleKey].push(p.title);
         });
 
-        // Use the new consolidation logic with rejected suggestions
         const consolidation = await consolidateThemesWithGemini(taxonomy, paperSamples, apiKey, reviewTopic, activeModelId, rejectedSuggestions, lockedItems, (msg) => setRetryStatus(msg));
         
         if (consolidation.suggestions && consolidation.suggestions.length > 0) {
@@ -2186,15 +2148,12 @@ const App = () => {
            consolidation.suggestions.forEach(suggestion => {
               let isMeaningfulChange = false;
 
-              // 1. Check MERGE Validity
               if (suggestion.suggested_merge) {
                  const { themes_to_combine, new_theme_name } = suggestion.suggested_merge;
                  const cleanNewName = new_theme_name.trim();
                  const cleanThemes = themes_to_combine.map(t => t.trim());
-                 // Filter out self-merges
                  const isSelfMerge = cleanThemes.length === 1 && cleanThemes[0] === cleanNewName;
                  
-                 // FILTER OUT LOCKED SUB-THEMES (If any involved are locked, ignore)
                  const involvesLocked = cleanThemes.some(t => lockedItems.includes(`theme:${suggestion.main_category}|||${t}`));
 
                  if (!isSelfMerge && cleanThemes.length > 0 && !involvesLocked) {
@@ -2204,7 +2163,6 @@ const App = () => {
                  }
               }
 
-              // 2. Check MOVE Validity
               if (suggestion.suggested_move) {
                  const { theme, current_category, target_category } = suggestion.suggested_move;
                  const isLocked = lockedItems.includes(`theme:${current_category}|||${theme}`);
@@ -2215,7 +2173,6 @@ const App = () => {
                  }
               }
 
-              // 3. Check CATEGORY MERGE Validity
               if (suggestion.suggested_category_merge) {
                  const { source_category, target_category } = suggestion.suggested_category_merge;
                  const isLocked = lockedItems.includes(`cat:${source_category}`) || lockedItems.includes(`cat:${target_category}`);
@@ -2226,7 +2183,6 @@ const App = () => {
                  }
               }
 
-              // 4. Check RENAME Validity
               if (suggestion.suggested_rename) {
                  const { current_name, new_name } = suggestion.suggested_rename;
                  const isLocked = lockedItems.includes(`cat:${current_name}`);
@@ -2252,7 +2208,6 @@ const App = () => {
            if (suggestionsForUI.length === 0) {
                 setConsolidationSuggestions([{ id: 'ok', main_category: 'Success', suggested_merge: { themes_to_combine: [], new_theme_name: 'Structure is Optimal', reason: 'No significant improvements found.' } }]); 
            } else {
-               // DO NOT APPLY AUTOMATICALLY. Just set suggestions.
                setConsolidationSuggestions(suggestionsForUI);
            }
         } else { 
@@ -2282,7 +2237,7 @@ const App = () => {
       if (!apiKey) { setError("No API Key"); return; }
       const targets = papers.filter(p => p.category === cat);
       if (!targets.length) return;
-      setSynthesisThemeKey(`${cat}`); // Just the category name
+      setSynthesisThemeKey(`${cat}`); 
       setSynthesisModalOpen(true);
       setIsSynthesizing(true);
       try { 
@@ -2317,14 +2272,12 @@ const App = () => {
           } 
         }
         
-        // --- CHANGED: Store in state and open modal instead of immediate download ---
         setBulkResults(finalSections);
         setBulkType('sub');
         setBulkModalOpen(true);
       } catch (err: any) { setError(err.message); } finally { setIsBulkSynthesizing(false); setRetryStatus(''); }
   };
 
-  // NEW: Bulk Synthesis for Main Categories (Aggregating Sub-Themes)
   const handleBulkMainSynthesis = async () => {
       if (!apiKey || papers.length === 0) return; 
       setIsBulkSynthesizing(true); 
@@ -2335,17 +2288,14 @@ const App = () => {
         const finalSections: any[] = [];
 
         for (const cat of uniqueCats) {
-            // Get all papers for this MAIN category, regardless of sub-theme
             const catPapers = papers.filter(p => p.category === cat);
             const pData = catPapers.map((p: any) => ({ keyFinding: p.keyFinding, impactKeywords: p.impactKeywords, shortCitation: p.shortCitation }));
             
             setRetryStatus(`Bulk Main: ${cat}...`);
-            // We reuse synthesizeSectionWithGemini but pass the Main Category name as the "theme" context
             const result = await synthesizeSectionWithGemini(cat, pData, apiKey, reviewTopic, activeModelId, (msg) => setRetryStatus(`Bulk Main: ${msg}`));
             finalSections.push({ category: cat, result: { ...result, modelUsed: activeModelId } });
         }
 
-        // --- CHANGED: Store in state and open modal instead of immediate download ---
         setBulkResults(finalSections);
         setBulkType('main');
         setBulkModalOpen(true);
@@ -2370,7 +2320,7 @@ const App = () => {
     const dataToSave = {
         papers,
         reviewTopic,
-        isTermsNormalized // Save this state!
+        isTermsNormalized 
     };
     const blob = new Blob([JSON.stringify(dataToSave, null, 2)], { type: 'application/json' }); 
     const link = document.createElement("a"); 
@@ -2395,14 +2345,11 @@ const App = () => {
             json.papers.forEach((p: Paper) => newExpanded[p.category] = true); 
             setExpandedCategories(newExpanded); 
             
-            // Restore normalization state
             setIsTermsNormalized(json.isTermsNormalized || false);
             if (json.isTermsNormalized) {
-                 // If previously normalized, default groupings to ON
                  setIsDriverGrouped(true);
                  setIsResponseGrouped(true);
             }
-            // If data is loaded, assume it's not preliminary structure unless it is empty
             setIsOptimized(true);
 
             setError(`Loaded ${json.papers.length} papers.`); 
@@ -2416,7 +2363,6 @@ const App = () => {
 
   const renderListView = () => {
     
-    // Check if we should show the hint (only if NO suggestions are pending)
     const showConsolidationHint = papers.length > 0 && (!consolidationSuggestions || consolidationSuggestions.length === 0) && !isConsolidating;
 
     let consolidationHintMessage = "";
@@ -2443,7 +2389,6 @@ const App = () => {
             </div>
         )}
 
-        {/* Theme Consolidation Explanation and Suggestions Area */}
         {showConsolidationHint && (
             <div className="p-4 rounded-lg shadow-md border bg-blue-50 border-blue-200 mb-4">
                 <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-blue-800">
@@ -2454,7 +2399,6 @@ const App = () => {
             </div>
         )}
         
-        {/* New: Synthesis Explanation Box */}
         {papers.length > 0 && (
             <div className="p-4 rounded-lg shadow-md border bg-yellow-50 border-yellow-200 mb-4">
                 <h3 className="font-bold text-lg mb-2 flex items-center gap-2 text-yellow-800">
@@ -2510,7 +2454,6 @@ const App = () => {
                                     )}
                                 </div>
                                 <div className="flex gap-2 ml-4">
-                                    {/* VERIFY BUTTON */}
                                     {s.suggested_move && !s.isVerified && (
                                         <button 
                                           onClick={() => handleVerifyMove(s.id)} 
@@ -2522,7 +2465,6 @@ const App = () => {
                                         </button>
                                     )}
                                     
-                                    {/* REVERSE BUTTON - NOW FOR BOTH MOVE AND CATEGORY MERGE */}
                                     {(s.suggested_category_merge || s.suggested_move) && (
                                         <button 
                                           onClick={() => handleReverseSuggestion(s.id)}
@@ -2663,10 +2605,10 @@ const App = () => {
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900 font-sans">
+      <UpdateNoticeModal isOpen={showUpdateNotice} onClose={() => setShowUpdateNotice(false)} />
       <QuotaModal isOpen={quotaErrorOpen} onClose={() => setQuotaErrorOpen(false)} exportFn={exportStateJSON} />
       <ManualFixModal isOpen={!!manualFixState} text={manualFixState?.text || ''} onSave={handleManualFixSave} onCancel={() => { setManualFixState(null); setIsProcessing(false); }} />
       <SynthesisModal isOpen={synthesisModalOpen} onClose={() => setSynthesisModalOpen(false)} themeKey={synthesisThemeKey} isSynthesizing={isSynthesizing} retryStatus={retryStatus} result={synthesisResult} />
-      {/* --- ADDED: Bulk Synthesis Modal --- */}
       <BulkSynthesisModal isOpen={bulkModalOpen} onClose={() => setBulkModalOpen(false)} results={bulkResults} type={bulkType} />
       
       <header className="bg-emerald-900 text-white p-4 shadow-md flex justify-between items-center z-10">
@@ -2676,7 +2618,7 @@ const App = () => {
 
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
         <div className="w-full md:w-1/3 min-w-[350px] flex flex-col border-r border-slate-200 bg-white p-6 shadow-sm z-0">
-           {showRateLimitNotice && <div className="hidden md:flex mb-4 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800"><div className="flex-1"><p className="font-bold flex items-center gap-1"><Info className="h-3 w-3"/> API Rate Limits</p><ul className="list-disc pl-4 mt-1 space-y-1"><li>Free Tier has restrictive limits on Gemini 3 Flash.</li><li>If stuck, switch to Gemini 3.1 Flash Lite or Gemma. Do not combine AI models for extraction step.</li></ul></div><button onClick={() => setShowRateLimitNotice(false)} className="text-amber-600 hover:text-amber-900 self-start ml-2"><X className="h-3 w-3" /></button></div>}
+           {showRateLimitNotice && <div className="hidden md:flex mb-4 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800"><div className="flex-1"><p className="font-bold flex items-center gap-1"><Info className="h-3 w-3"/> API Rate Limits</p><ul className="list-disc pl-4 mt-1 space-y-1"><li>Free Tier has restrictive limits on Gemini 3 Flash.</li><li>If stuck, switch to Gemini 3.1 Flash Lite.</li></ul></div><button onClick={() => setShowRateLimitNotice(false)} className="text-amber-600 hover:text-amber-900 self-start ml-2"><X className="h-3 w-3" /></button></div>}
 
            {showSettings && (
             <div className="mb-4 p-4 bg-slate-100 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-2 space-y-4">
@@ -2686,10 +2628,9 @@ const App = () => {
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">AI Model Selection</label>
                 <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); }} className="w-full p-2 text-sm border border-slate-300 rounded mb-2 bg-white">
-                  {MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {MODELS.map(m => <option key={m.id} value={m.id} disabled={m.type === "gemma"}>{m.name}</option>)}
                 </select>
                 
-                {/* BLUE INFO BOX RESTORED */}
                 <div className="mt-2 bg-blue-50 p-2 rounded border border-blue-100">
                   <p className="text-xs text-blue-800 font-medium flex items-center gap-1">
                     <Cpu className="h-3 w-3" /> {MODELS.find(m => m.id === selectedModel)?.name}
@@ -2731,19 +2672,15 @@ const App = () => {
                 <button onClick={() => setViewMode('folder')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='folder'?'bg-white shadow-sm':'text-slate-500'}`}><List className="h-4 w-4"/> List</button>
                 <button onClick={() => setViewMode('flow')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='flow'?'bg-white shadow-sm text-blue-600':'text-slate-500'}`}><GitGraph className="h-4 w-4"/> Flow</button>
                 <button onClick={() => setViewMode('timeline')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='timeline'?'bg-white shadow-sm text-purple-600':'text-slate-500'}`}><BarChart2 className="h-4 w-4"/> Trends</button>
-                {/* SPLIT ANALYSIS TABS */}
                 <button onClick={() => setViewMode('gap_analysis')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='gap_analysis'?'bg-white shadow-sm text-emerald-600':'text-slate-500'}`}><Grid3X3 className="h-4 w-4"/> Gaps</button>
                 <button onClick={() => setViewMode('geo_analysis')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='geo_analysis'?'bg-white shadow-sm text-amber-600':'text-slate-500'}`}><Globe className="h-4 w-4"/> Demographics</button>
-                
                 <button onClick={() => setViewMode('chat')} className={`flex gap-2 px-3 py-1.5 rounded text-xs font-bold ${viewMode==='chat'?'bg-white shadow-sm text-indigo-600':'text-slate-500'}`}><MessageSquare className="h-4 w-4"/> Chat</button>
              </div>
              
              <div className='flex items-center gap-2'>
-                {/* --- UPDATED: Renamed Buttons and New Modal Logic --- */}
                 <button onClick={handleOverallSynthesisAndExport} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-yellow-50 text-yellow-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <Zap className="h-3 w-3 fill-yellow-700"/>} Synthesize Sub-Themes</button>
                 <button onClick={handleBulkMainSynthesis} disabled={!papers.length || isBulkSynthesizing || !apiKey} className={`flex gap-1 px-1.5 py-1.5 border rounded text-[10px] font-bold uppercase tracking-wide ${papers.length ? 'hover:bg-orange-50 text-orange-700 cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>{isBulkSynthesizing ? <Loader2 className="h-3 w-3 animate-spin"/> : <FileText className="h-3 w-3 fill-orange-700"/>} Synthesize Main Categories</button>
                 
-                {/* Theme Consolidation Button */}
                 <button 
                   onClick={handleConsolidateThemes}
                   disabled={papers.length === 0 || isConsolidating || !apiKey}
@@ -2797,7 +2734,6 @@ const App = () => {
                 <div className="h-full flex flex-col">
                     <div className="mb-4 text-xs text-slate-500 flex justify-between items-center">
                         <span>Click lines to filter papers below. Zoom to explore dense networks.</span>
-                        {/* Removed the 'Manuscript Ready' badge */}
                     </div>
                     <div className="flex-1 min-h-[500px]">
                         <FlowDiagram 
